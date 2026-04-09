@@ -1,0 +1,24 @@
+[Unit]
+Description=FM TEF Radio Daemon
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fm-tef-daemon.py
+Restart=on-failure
+RestartSec=5
+
+# Override any of these with a drop-in or EnvironmentFile
+Environment=SERIAL_PORT=/dev/ttyACM0
+Environment=AUDIO_DEVICE=hw:CARD=FMDX,DEV=0
+Environment=ICECAST_HOST=localhost
+Environment=ICECAST_PORT=8000
+Environment=ICECAST_MOUNT=/fm
+Environment=ICECAST_SOURCE=your-source-password
+Environment=ICECAST_ADMIN_USER=admin
+Environment=ICECAST_ADMIN_PASS=your-admin-password
+Environment=DAEMON_PORT=8080
+Environment=STARTUP_FREQ=90800000
+
+[Install]
+WantedBy=multi-user.target
