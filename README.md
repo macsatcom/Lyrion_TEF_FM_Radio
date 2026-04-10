@@ -52,14 +52,24 @@ Plug in the TEF tuner, then:
 # Serial control port (usually ttyACM0)
 ls /dev/ttyACM*
 
-# ALSA audio device name
-aplay -l
+# ALSA audio device name — the tuner is a capture (recording) device
+arecord -l
 ```
 
-The ALSA output from `aplay -l` will look something like:
+The tuner presents as a USB audio **capture** device, not a playback device.
+`aplay -l` will not show it. The output from `arecord -l` will look something like:
 
 ```
-card 2: FMDX [FM-DX Tuner], device 0: USB Audio [USB Audio]
+card 2: Tuner [FM-DX Tuner], device 0: USB Audio [USB Audio]
+```
+
+You can verify audio is working before configuring the daemon:
+```bash
+# Listen directly (pipe capture → playback)
+arecord -D hw:CARD=Tuner,DEV=0 -f S16_LE -r 48000 -c 2 - | aplay -
+
+# Or record 5 seconds to a file
+arecord -D hw:CARD=Tuner,DEV=0 -f S16_LE -r 48000 -c 2 -d 5 test.wav && aplay test.wav
 ```
 
 Your ALSA device string is then `hw:CARD=FMDX,DEV=0`.
