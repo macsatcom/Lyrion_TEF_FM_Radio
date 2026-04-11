@@ -1,66 +1,23 @@
-[% pagetitle = 'PLUGIN_TEFRADIO_SETTINGS' | string %]
-[% PROCESS helpinfo.html %]
-[% WRAPPER settings/header.html %]
+[% PROCESS settings/header.html %]
 
-<h3>[% 'PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT' | string %]</h3>
-<div class="prefitem">
-    <div class="preflabel">
-        <label for="serial_port">[% 'PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT' | string %]</label>
-    </div>
-    <div class="preffield">
-        <input type="text" id="serial_port" name="serial_port"
-               value="[% prefs.serial_port %]" size="35" />
-        <div class="prefdesc">
-            [% 'PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT_DESC' | string %]
-        </div>
-    </div>
-</div>
-
-<h3>[% 'PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE' | string %]</h3>
-<div class="prefitem">
-    <div class="preflabel">
-        <label for="audio_device">[% 'PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE' | string %]</label>
-    </div>
-    <div class="preffield">
-        <input type="text" id="audio_device" name="audio_device"
-               value="[% prefs.audio_device %]" size="35" />
-        <div class="prefdesc">
-            [% 'PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE_DESC' | string %]
-        </div>
-    </div>
-</div>
-
-<h3>[% 'PLUGIN_TEFRADIO_SETTINGS_BITRATE' | string %]</h3>
-<div class="prefitem">
-    <div class="preflabel">
-        <label for="bitrate">[% 'PLUGIN_TEFRADIO_SETTINGS_BITRATE' | string %]</label>
-    </div>
-    <div class="preffield">
-        <select id="bitrate" name="bitrate">
-            [% FOREACH rate IN ['128k', '192k', '256k', '320k'] %]
-            <option value="[% rate %]"
-                [% IF prefs.bitrate == rate %] selected="selected"[% END %]>[% rate %]</option>
-            [% END %]
-        </select>
-        <div class="prefdesc">
-            [% 'PLUGIN_TEFRADIO_SETTINGS_BITRATE_DESC' | string %]
-        </div>
-    </div>
-</div>
-
-<h3>[% 'PLUGIN_TEFRADIO_SETTINGS_STATIONS' | string %]</h3>
-<div class="prefitem">
-    <div class="preflabel">
-        <label for="stations_text">[% 'PLUGIN_TEFRADIO_SETTINGS_STATIONS' | string %]</label>
-    </div>
-    <div class="preffield">
-        <textarea id="stations_text" name="stations_text"
-                  rows="14" cols="40"
-                  style="font-family: monospace;">[% prefs.stations_text %]</textarea>
-        <div class="prefdesc">
-            [% 'PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC' | string %]
-        </div>
-    </div>
-</div>
-
+[% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT" desc="PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT_DESC" %]
+    <input type="text" class="stdedit" name="serial_port" value="[% prefs.serial_port %]" size="40" />
 [% END %]
+
+[% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE" desc="PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE_DESC" %]
+    <input type="text" class="stdedit" name="audio_device" value="[% prefs.audio_device %]" size="40" />
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_BITRATE" desc="PLUGIN_TEFRADIO_SETTINGS_BITRATE_DESC" %]
+    <select name="bitrate">
+        [% FOREACH rate IN ['128k', '192k', '256k', '320k'] %]
+        <option value="[% rate %]"[% IF prefs.bitrate == rate %] selected="selected"[% END %]>[% rate %]</option>
+        [% END %]
+    </select>
+[% END %]
+
+[% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_STATIONS" desc="PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC" %]
+    <textarea class="stdedit" name="stations_text" rows="14" cols="50" style="font-family: monospace;">[% prefs.stations_text %]</textarea>
+[% END %]
+
+[% PROCESS settings/footer.html %]
