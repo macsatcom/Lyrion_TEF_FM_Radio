@@ -760,7 +760,7 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
-    signal.signal(signal.SIGINT, lambda s, f: None)   # handled by KeyboardInterrupt in commands
+    signal.signal(signal.SIGINT, signal.default_int_handler)  # raises KeyboardInterrupt in commands
 
     dispatch = {
         "tune":        cmd_tune,
