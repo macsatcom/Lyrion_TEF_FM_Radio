@@ -331,6 +331,52 @@ def cmd_quality(args, tuner):
         print(_json_mod.dumps(collected, indent=2))
 
 
+def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
+    """
+    Tune to freq_khz and collect RDS group-0 lines until we have a complete
+    8-char PS name (all four 2-char segments seen) or wait_sec elapses.
+    Returns the PS name string, or '' if nothing arrived in time.
+    """
+    tuner.send_tune(freq_khz)
+
+    ps = [' '] * 8          # 8-char Programme Service name
+    seen_segs = set()
+    deadline  = time.monotonic() + wait_sec
+
+    while time.monotonic() < deadline:
+        line = tuner._readline()
+        if not line or not line.startswith('R'):
+            continue
+
+        # Legacy RDS format: R<B:4hex><C:4hex><D:4hex><err:2hex>
+        if len(line) < 15:
+            continue
+        try:
+            B = int(line[1:5],  16)
+            D = int(line[9:13], 16)
+        except ValueError:
+            continue
+
+        group_type = (B >> 12) & 0xF
+        if group_type != 0:
+            continue
+
+        seg = B & 0x3
+        c1  = (D >> 8) & 0xFF
+        c2  =  D       & 0xFF
+        if 0x20 <= c1 < 0x7F:
+            ps[seg * 2]     = chr(c1)
+        if 0x20 <= c2 < 0x7F:
+            ps[seg * 2 + 1] = chr(c2)
+        seen_segs.add(seg)
+
+        if seen_segs == {0, 1, 2, 3}:
+            break   # all four segments received — PS name complete
+
+    name = ''.join(ps).strip()
+    return name
+
+
 def cmd_scan(args, tuner):
     from_khz = int(parse_freq(str(args.freq_from)) / 10) * 10   # round to 10 kHz
     to_khz   = int(parse_freq(str(args.freq_to))   / 10) * 10
@@ -380,15 +426,35 @@ def cmd_scan(args, tuner):
     except KeyboardInterrupt:
         tuner._send("")   # cancel scan
 
+    # ── RDS name resolution ───────────────────────────────────────────────────
+    # Filter to stations above threshold first, then tune each and wait for PS.
+    stations = [(f, r) for f, r in results if r >= args.threshold]
+
+    if args.rds and stations:
+        rds_wait = args.rds_time
+        print(f"Resolving RDS names ({rds_wait:.0f} s per station) …\n")
+        named = []
+        for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
+            print(f"  Tuning {_freq_display(freq_khz)} …", end=' ', flush=True)
+            ps = _collect_rds_ps(tuner, freq_khz, rds_wait)
+            label = ps if ps else _freq_display(freq_khz)
+            print(label)
+            named.append((freq_khz, rssi, label))
+        stations_named = named
+    else:
+        stations_named = [(f, r, _freq_display(f)) for f, r in stations]
+
+    # ── Output ────────────────────────────────────────────────────────────────
     if args.json:
-        out = [{"freq_mhz": round(f / 1000, 3), "rssi": r} for f, r in results
-               if r >= args.threshold]
+        out = [
+            {"freq_mhz": round(f / 1000, 3), "rssi": r, "name": n}
+            for f, r, n in stations_named
+        ]
         print(_json_mod.dumps(out, indent=2))
-    elif results:
+    elif stations_named:
         print(f"\nStations above {args.threshold} dBf:")
-        for freq_khz, rssi in sorted(results, key=lambda x: -x[1]):
-            if rssi >= args.threshold:
-                print(f"  {_freq_display(freq_khz):>9}  {rssi:6.2f} dBf")
+        for freq_khz, rssi, name in sorted(stations_named, key=lambda x: -x[1]):
+            print(f"  {_freq_display(freq_khz):>9}  {rssi:6.2f} dBf  {name}")
 
 
 def cmd_monitor(args, tuner):
@@ -505,6 +571,8 @@ examples:
   %(prog)s quality --interval 500
   %(prog)s scan
   %(prog)s scan --from 87.5 --to 108 --step 0.1 --threshold 10
+  %(prog)s scan --threshold 5 --rds
+  %(prog)s scan --threshold 5 --rds --rds-time 12
   %(prog)s scan --repeat
   %(prog)s monitor
   %(prog)s monitor --no-quality
@@ -612,6 +680,10 @@ examples:
                    help="Repeat scan continuously (Ctrl+C to stop)")
     p.add_argument("--timeout", type=float, default=120.0, metavar="sec",
                    help="Scan timeout in seconds (default: 120)")
+    p.add_argument("--rds", action="store_true",
+                   help="After scan, tune each found station and resolve its RDS PS name")
+    p.add_argument("--rds-time", type=float, default=8.0, metavar="sec",
+                   help="Max seconds to wait for RDS PS name per station (default: 8)")
 
     # ── monitor ──
     p = sub.add_parser("monitor", help="Display all tuner output in real time")
