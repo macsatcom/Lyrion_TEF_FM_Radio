@@ -336,8 +336,21 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
     Tune to freq_khz and collect RDS group-0 lines until we have a complete
     8-char PS name (all four 2-char segments seen) or wait_sec elapses.
     Returns the PS name string, or '' if nothing arrived in time.
+
+    Quality reports (S-lines) are suppressed during the wait to avoid
+    drowning out the RDS groups in the serial stream.
     """
+    # Flush any residual scan output / quality reports from the buffer
+    tuner.ser.reset_input_buffer()
+
+    # Silence quality reports — they arrive every 66 ms and make it hard
+    # to catch the much rarer RDS groups in the readline loop.
+    tuner.send_simple("I0", "I")
+
     tuner.send_tune(freq_khz)
+
+    # Flush again: send_tune may have left stale echoes in the buffer
+    tuner.ser.reset_input_buffer()
 
     ps = [' '] * 8          # 8-char Programme Service name
     seen_segs = set()
@@ -345,10 +358,14 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
 
     while time.monotonic() < deadline:
         line = tuner._readline()
-        if not line or not line.startswith('R'):
+        if not line:
             continue
 
-        # Legacy RDS format: R<B:4hex><C:4hex><D:4hex><err:2hex>
+        # Skip anything that isn't an RDS group line
+        if not line.startswith('R'):
+            continue
+
+        # Legacy RDS format: R<B:4hex><C:4hex><D:4hex><err:2hex>  (14 chars after R)
         if len(line) < 15:
             continue
         try:
@@ -359,9 +376,9 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
 
         group_type = (B >> 12) & 0xF
         if group_type != 0:
-            continue
+            continue   # only interested in group 0 (PS name)
 
-        seg = B & 0x3
+        seg = B & 0x3   # 2-bit segment address: 0-3 → chars 0-1, 2-3, 4-5, 6-7
         c1  = (D >> 8) & 0xFF
         c2  =  D       & 0xFF
         if 0x20 <= c1 < 0x7F:
@@ -372,6 +389,9 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
 
         if seen_segs == {0, 1, 2, 3}:
             break   # all four segments received — PS name complete
+
+    # Re-enable quality reports at default rate before returning
+    tuner.send_simple("I66", "I")
 
     name = ''.join(ps).strip()
     return name
@@ -432,10 +452,17 @@ def cmd_scan(args, tuner):
 
     if args.rds and stations:
         rds_wait = args.rds_time
-        print(f"Resolving RDS names ({rds_wait:.0f} s per station) …\n")
+
+        # Send an explicit scan-cancel and flush before starting tune sequence.
+        # The scanner may still have buffered output even after the U-line.
+        tuner._send("")
+        time.sleep(0.1)
+        tuner.ser.reset_input_buffer()
+
+        print(f"Resolving RDS names (up to {rds_wait:.0f} s per station) …\n")
         named = []
         for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
-            print(f"  Tuning {_freq_display(freq_khz)} …", end=' ', flush=True)
+            print(f"  {_freq_display(freq_khz):>9}  …", end=' ', flush=True)
             ps = _collect_rds_ps(tuner, freq_khz, rds_wait)
             label = ps if ps else _freq_display(freq_khz)
             print(label)
