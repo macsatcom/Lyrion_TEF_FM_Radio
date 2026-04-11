@@ -51,7 +51,7 @@ No separate server process, no HTTP relay, no Icecast — the audio pipeline liv
 |---|---|
 | Lyrion Music Server 8.x | Tested on lmscommunity Docker image |
 | ffmpeg with libmp3lame | Must be available in `$PATH` |
-| TEF668X USB tuner | Flashed with [FM-DX-Tuner](https://github.com/kkonradpl/FM-DX-Tuner) headless firmware |
+| TEF668X USB tuner | Flashed with [FM-DX-Tuner](https://github.com/kkonradpl/FM-DX-Tuner) headless firmware ([units available on Discord marketplace](https://discord.com/channels/1053804249651359765/1300155791294070826)) |
 | Perl 5 | Already present in LMS — no extra modules needed |
 
 Python is **not** required. The plugin is written entirely in Perl (the same language as LMS itself) and works inside the lmscommunity Docker container without any modifications to the image.

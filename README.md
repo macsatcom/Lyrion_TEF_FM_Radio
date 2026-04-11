@@ -38,7 +38,7 @@ Station changes are instant — the TEF hardware switches frequency with a singl
 
 - **ffmpeg** with `libmp3lame`
 - **Perl 5** (already present in LMS — no extra modules needed)
-- **TEF668X headless STM32 tuner** flashed with [FM-DX-Tuner firmware](https://github.com/kkonradpl/FM-DX-Tuner)
+- **TEF668X headless STM32 tuner** flashed with [FM-DX-Tuner firmware](https://github.com/kkonradpl/FM-DX-Tuner) ([units available on Discord marketplace](https://discord.com/channels/1053804249651359765/1300155791294070826))
 - Lyrion Music Server 8.x
 
 ---
