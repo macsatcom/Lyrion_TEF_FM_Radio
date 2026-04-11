@@ -36,6 +36,14 @@ my ($port, $freq_khz, $alsa_dev, $bitrate) = @ARGV;
 $bitrate  //= '192k';
 $freq_khz   = int($freq_khz);
 
+# Locate ffmpeg: prefer system PATH, fall back to the bundled static binary
+# that lives alongside this script in the plugin directory.
+my $ffmpeg = do {
+    my $bundled = __FILE__;
+    $bundled =~ s{[^/]+$}{ffmpeg};
+    (-x $bundled) ? $bundled : 'ffmpeg';
+};
+
 # ── 1. Tune hardware ──────────────────────────────────────────────────────
 _tune($port, $freq_khz);
 
@@ -46,7 +54,7 @@ select(undef, undef, undef, 0.35);
 # exec() replaces this Perl process with ffmpeg, inheriting stdout.
 # LMS is holding the read end of the pipe connected to our stdout.
 exec(
-    'ffmpeg',
+    $ffmpeg,
     '-loglevel', 'error',
     '-f',        'alsa',
     '-i',        $alsa_dev,
@@ -54,7 +62,7 @@ exec(
     '-b:a',      $bitrate,
     '-f',        'mp3',
     'pipe:1',
-) or die "tef-stream: cannot exec ffmpeg: $!\n";
+) or die "tef-stream: cannot exec ffmpeg ($ffmpeg): $!\n";
 
 
 sub _tune {

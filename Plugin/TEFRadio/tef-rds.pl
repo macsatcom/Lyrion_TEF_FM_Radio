@@ -48,7 +48,8 @@ select(undef, undef, undef, 0.7);
 
 # Configure and open serial port (read-only — we never send commands)
 system('stty', '-F', $port, qw(115200 cs8 -cstopb -parenb raw -echo));
-unless (sysopen(my $tty, $port, O_RDONLY | O_NOCTTY)) {
+my $tty;
+unless (sysopen($tty, $port, O_RDONLY | O_NOCTTY)) {
     warn "tef-rds: cannot open $port: $!\n";
     unlink $pid_file;
     exit 1;
