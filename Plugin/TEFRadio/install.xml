@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0"?>
 <extension>
     <name>PLUGIN_TEFRADIO</name>
     <module>Plugins::TEFRadio::Plugin</module>
@@ -11,7 +11,7 @@
     <optionsURL>plugins/TEFRadio/settings/basic.html</optionsURL>
 
     <defaultState>enabled</defaultState>
-    <version>0.1</version>
+    <version>0.4</version>
 
     <targetApplication>
         <id>SqueezeCenter</id>

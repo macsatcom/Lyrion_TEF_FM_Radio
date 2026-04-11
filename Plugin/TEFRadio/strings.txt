@@ -1,47 +1,49 @@
+# String file for TEFRadio plugin
+
 PLUGIN_TEFRADIO
-	EN	TEF FM/AM Radio
 	DA	TEF FM/AM Radio
+	EN	TEF FM/AM Radio
 
 PLUGIN_TEFRADIO_DESC
-	EN	FM and AM radio directly from a TEF668X USB tuner — no Icecast required
 	DA	FM- og AM-radio direkte fra en TEF668X USB-tuner — ingen Icecast nødvendig
+	EN	FM and AM radio directly from a TEF668X USB tuner — no Icecast required
 
 PLUGIN_TEFRADIO_SETTINGS
-	EN	TEF FM/AM Radio Settings
 	DA	TEF FM/AM Radio-indstillinger
+	EN	TEF FM/AM Radio Settings
 
 PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT
-	EN	Serial Port
 	DA	Seriel port
+	EN	Serial Port
 
 PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT_DESC
-	EN	USB serial control port for the TEF tuner (e.g. /dev/ttyACM0). Find it with: ls /dev/ttyACM*
 	DA	USB seriel kontrolport til TEF-tuneren (f.eks. /dev/ttyACM0). Find den med: ls /dev/ttyACM*
+	EN	USB serial control port for the TEF tuner (e.g. /dev/ttyACM0). Find it with: ls /dev/ttyACM*
 
 PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE
-	EN	ALSA Audio Device
 	DA	ALSA-lydenhed
+	EN	ALSA Audio Device
 
 PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE_DESC
-	EN	ALSA capture device name for the TEF USB audio output (e.g. hw:CARD=Tuner,DEV=0). Find it with: arecord -l
 	DA	ALSA-optagelsesenhed til TEF USB-lydudgang (f.eks. hw:CARD=Tuner,DEV=0). Find den med: arecord -l
+	EN	ALSA capture device name for the TEF USB audio output (e.g. hw:CARD=Tuner,DEV=0). Find it with: arecord -l
 
 PLUGIN_TEFRADIO_SETTINGS_BITRATE
-	EN	MP3 Bitrate
 	DA	MP3-bithastighed
+	EN	MP3 Bitrate
 
 PLUGIN_TEFRADIO_SETTINGS_BITRATE_DESC
-	EN	Audio encoding bitrate passed to ffmpeg (e.g. 192k, 256k, 320k)
 	DA	Lydkodningsbithastighed til ffmpeg (f.eks. 192k, 256k, 320k)
+	EN	Audio encoding bitrate passed to ffmpeg (e.g. 192k, 256k, 320k)
 
 PLUGIN_TEFRADIO_SETTINGS_STATIONS
-	EN	Station Presets
 	DA	Stationsgenveje
+	EN	Station Presets
 
 PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC
-	EN	One station per line: Name|Frequency. FM: MHz (e.g. DR P1|90.8). AM: kHz (e.g. BBC R4|198 or BBC WS|648).
 	DA	Én station pr. linje: Navn|Frekvens. FM: MHz (f.eks. DR P1|90.8). AM: kHz (f.eks. BBC R4|198 eller BBC WS|648).
+	EN	One station per line: Name|Frequency. FM: MHz (e.g. DR P1|90.8). AM: kHz (e.g. BBC R4|198 or BBC WS|648).
 
 PLUGIN_TEFRADIO_TUNE_ERROR
-	EN	Could not start TEF radio stream — check serial port and audio device in settings
 	DA	Kunne ikke starte TEF-radiostream — tjek seriel port og lydenhed i indstillinger
+	EN	Could not start TEF radio stream — check serial port and audio device in settings

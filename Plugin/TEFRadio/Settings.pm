@@ -1,14 +1,7 @@
 package Plugins::TEFRadio::Settings;
 
-# Settings page for the TEF FM Radio plugin.
-# Accessible via LMS web UI: Settings → Plugins → TEF FM Radio
-#
-# Preferences managed here:
-#   serial_port   — USB serial control port  (e.g. /dev/ttyACM0)
-#   audio_device  — ALSA capture device name (e.g. hw:CARD=Tuner,DEV=0)
-#   bitrate       — MP3 bitrate for the audio stream (e.g. 192k)
-#   stations      — Array of { name, freq } hashes
-#   stations_text — Human-editable "Name|Freq" text representation of stations
+# Settings page for the TEF FM/AM Radio plugin.
+# Accessible via LMS web UI: Settings → Plugins → TEF FM/AM Radio
 
 use strict;
 use warnings;
@@ -21,11 +14,17 @@ use Slim::Utils::Prefs;
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
 
-sub name { 'PLUGIN_TEFRADIO_SETTINGS' }
-sub page { 'plugins/TEFRadio/settings/basic.html' }
+sub name {
+    return Slim::Web::HTTP::CSRF->protectName('PLUGIN_TEFRADIO_SETTINGS');
+}
 
-# The base class auto-saves these scalar prefs from the form POST
-sub prefs { return ($prefs, qw(serial_port audio_device bitrate stations_text)) }
+sub page {
+    return Slim::Web::HTTP::CSRF->protectURI('plugins/TEFRadio/settings/basic.html');
+}
+
+sub prefs {
+    return ($prefs, qw(serial_port audio_device bitrate stations_text));
+}
 
 sub handler {
     my ($class, $client, $params) = @_;

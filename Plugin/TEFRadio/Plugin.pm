@@ -21,6 +21,9 @@ package Plugins::TEFRadio::Plugin;
 use strict;
 use warnings;
 
+use vars qw($VERSION);
+$VERSION = '0.4';
+
 use base qw(Slim::Plugin::OPMLBased);
 
 use Slim::Utils::Log;
@@ -30,7 +33,7 @@ use JSON::PP;
 
 my $log = Slim::Utils::Log->addLogCategory({
     category     => 'plugin.tefradio',
-    defaultLevel => 'WARN',
+    defaultLevel => 'INFO',
     description  => 'PLUGIN_TEFRADIO',
 });
 
@@ -60,6 +63,8 @@ my @DEFAULT_STATIONS = (
 sub initPlugin {
     my $class = shift;
 
+    $log->info("TEF FM/AM Radio plugin v$VERSION initialising");
+
     $prefs->init({
         serial_port   => '/dev/ttyACM0',
         audio_device  => 'hw:CARD=Tuner,DEV=0',
@@ -72,10 +77,7 @@ sub initPlugin {
         'tefradio', 'Plugins::TEFRadio::ProtocolHandler'
     );
 
-    if (main::WEBUI) {
-        require Plugins::TEFRadio::Settings;
-        Plugins::TEFRadio::Settings->new();
-    }
+    Plugins::TEFRadio::Settings->new();
 
     $class->SUPER::initPlugin(
         feed   => \&handleFeed,
@@ -85,7 +87,8 @@ sub initPlugin {
         is_app => 1,
     );
 
-    $log->info('TEF FM/AM Radio plugin initialised');
+    $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .
+        $prefs->get('serial_port') . ' device=' . $prefs->get('audio_device'));
 }
 
 sub getDisplayName { 'PLUGIN_TEFRADIO' }
