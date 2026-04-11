@@ -60,6 +60,22 @@ Python is **not** required. The plugin is written entirely in Perl (the same lan
 
 ## Installation
 
+### Option A — via LMS plugin repository (recommended)
+
+1. In the LMS web UI go to **Settings → Plugin Settings → Additional Repositories**
+2. Add this URL and save:
+   ```
+   https://raw.githubusercontent.com/macsatcom/Lyrion_TEF_FM_Radio/main/repo.xml
+   ```
+3. Go to **Settings → Plugins**, find **TEF FM/AM Radio** and click **Install**
+4. Restart LMS when prompted
+
+LMS downloads and installs the zip automatically. Skip to [Configure the plugin](#3-configure-the-plugin) below.
+
+---
+
+### Option B — manual installation
+
 ### 1. Find your device names
 
 Plug in the TEF tuner, then on the **LMS host** (or inside the container if using Docker):
@@ -86,7 +102,7 @@ arecord -D hw:CARD=Tuner,DEV=0 -f S16_LE -r 48000 -c 2 - | aplay -
 
 You should hear the radio. Tune to a strong station first if it is silent.
 
-### 2. Install the plugin
+### 2. Install the plugin manually
 
 Copy the `TEFRadio/` directory into your LMS plugin folder and restart LMS.
 
