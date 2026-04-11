@@ -1,5 +1,37 @@
 [% PROCESS settings/header.html %]
 
+[% IF port_warning %]
+<div style="background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:12px 16px;margin:0 0 16px 0;color:#856404;font-size:0.95em;">
+  <strong style="display:block;margin-bottom:6px;">
+    [% IF port_warning == 'not_found' %]Serial port not found: [% port_path %][% ELSE %]Serial port permission denied: [% port_path %][% END %]
+  </strong>
+  [% IF port_warning == 'not_found' %]
+  The TEF tuner does not appear to be connected, or the port name is wrong.
+  Check that the USB cable is plugged in and verify the port with:
+  <code style="display:block;margin-top:6px;padding:4px 8px;background:#ffeaa0;border-radius:3px;">ls /dev/ttyACM*</code>
+  [% ELSIF port_warning == 'permission' %]
+  The LMS process cannot open this device. Choose one of the fixes below.
+  <br><br>
+  <strong>Fix A &mdash; udev rule on the host (recommended, permanent):</strong>
+  <code style="display:block;margin:6px 0;padding:6px 8px;background:#ffeaa0;border-radius:3px;white-space:pre-wrap;">echo 'SUBSYSTEM=="tty", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="6687", MODE="0666"' \
+  | sudo tee /etc/udev/rules.d/99-tef-tuner.rules
+sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger</code>
+  Then replug the USB cable and reload this page.
+  <br><br>
+  <strong>Fix B &mdash; docker-compose entrypoint wrapper:</strong>
+  Add the following to your <code>docker-compose.yml</code> under the <code>lms:</code> service:
+  <code style="display:block;margin:6px 0;padding:6px 8px;background:#ffeaa0;border-radius:3px;white-space:pre;">    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+          usermod -a -G dialout squeezeboxserver
+          exec start-container</code>
+  Then run <code>docker compose up -d --force-recreate</code>.
+  See <code>docker-compose.example.yml</code> in the plugin repository for a complete example.
+  [% END %]
+</div>
+[% END %]
+
 [% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT" desc="PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT_DESC" %]
     <input type="text" class="stdedit" name="serial_port" value="[% prefs.serial_port %]" size="40" />
 [% END %]

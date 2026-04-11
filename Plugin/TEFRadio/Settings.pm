@@ -63,6 +63,17 @@ sub handler {
     my $stations = $prefs->get('stations') || [];
     $params->{stations_text} = join "\n", map { "$_->{name}|$_->{freq}" } @$stations;
 
+    # Check that LMS can actually open the configured serial port
+    my $port = $prefs->get('serial_port') // '/dev/ttyACM0';
+    $params->{port_path} = $port;
+    if (!-e $port) {
+        $params->{port_warning} = 'not_found';
+    } elsif (!-r $port || !-w $port) {
+        $params->{port_warning} = 'permission';
+    } else {
+        $params->{port_warning} = '';
+    }
+
     return $class->SUPER::handler($client, $params);
 }
 

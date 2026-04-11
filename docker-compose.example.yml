@@ -1,0 +1,49 @@
+version: '3'
+
+# TEF FM/AM Radio — example docker-compose for Lyrion Music Server
+#
+# The entrypoint wrapper adds the squeezeboxserver user to the 'dialout' group
+# so LMS can open /dev/ttyACM0 (the TEF tuner serial control port).
+#
+# How to use:
+#   1. Copy this file to docker-compose.yml (or merge into your existing one).
+#   2. Adjust the volume paths under 'volumes:' to match your setup.
+#   3. docker compose up -d
+#
+# If you already have a working docker-compose.yml just add the 'entrypoint:'
+# block and the two device lines under 'devices:'.
+
+services:
+  lms:
+    container_name: lms
+    image: lmscommunity/lyrionmusicserver:stable
+
+    # ── TEF tuner fix ────────────────────────────────────────────────────────
+    # LMS runs internally as 'squeezeboxserver', which is not in the 'dialout'
+    # group. This entrypoint wrapper adds it before LMS starts.
+    # 'start-container' is the image's own original entrypoint — do not change it.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+          usermod -a -G dialout squeezeboxserver
+          exec start-container
+    # ─────────────────────────────────────────────────────────────────────────
+
+    volumes:
+      - /srv/lms-config:/config:rw          # LMS config / plugin data
+      - /mnt/music:/music:ro                # adjust to your music path
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+
+    network_mode: host
+
+    devices:
+      - /dev/snd:/dev/snd                   # USB audio from TEF tuner
+      - /dev/ttyACM0:/dev/ttyACM0           # TEF tuner serial control port
+
+    environment:
+      # Set to the IP address LMS should advertise on your LAN
+      - advertiseaddr=192.168.1.100
+
+    restart: unless-stopped
