@@ -65,7 +65,8 @@ sub _tune {
         qw(115200 cs8 -cstopb -parenb raw -echo));
 
     # Open R/W — we need to read back the OK from the startup handshake
-    unless (sysopen(my $tty, $port, O_RDWR | O_NOCTTY)) {
+    my $tty;
+    unless (sysopen($tty, $port, O_RDWR | O_NOCTTY)) {
         warn "tef-stream: warning: could not open $port: $!\n";
         return;  # Continue — device may already be tuned to the right frequency
     }

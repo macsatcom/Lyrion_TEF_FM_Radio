@@ -157,6 +157,11 @@ sub _kill_rds_reader {
 
 # ─── IO wrappers (LMS calls these on the blessed filehandle) ─────────────────
 
+sub opened {
+    my $self = shift;
+    return defined CORE::fileno($self);
+}
+
 sub fileno {
     my $self = shift;
     return CORE::fileno($self);

@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.7';
+$VERSION = '0.8';
 
 use base qw(Slim::Plugin::OPMLBased);
 
