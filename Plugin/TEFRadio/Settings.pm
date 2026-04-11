@@ -46,10 +46,12 @@ sub handler {
 
             if ($name ne '' && $freq =~ /^\d+\.?\d*$/) {
                 my $f = $freq + 0;
-                if ($f >= 87.5 && $f <= 108.0) {
+                # FM: 65–108 MHz (stored as MHz)
+                # AM: 144–30000 kHz LW/MW/SW (stored as kHz)
+                if (($f >= 65 && $f <= 108) || ($f >= 144 && $f <= 30000)) {
                     push @stations, { name => $name, freq => $f };
                 } else {
-                    $log->warn("TEFRadio settings: skipping out-of-band frequency $f MHz ($name)");
+                    $log->warn("TEFRadio settings: skipping out-of-range frequency $f ($name)");
                 }
             }
         }

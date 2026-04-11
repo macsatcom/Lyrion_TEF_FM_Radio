@@ -1,21 +1,23 @@
 package Plugins::TEFRadio::Plugin;
 
-# TEF FM Radio plugin for Lyrion Music Server
+# TEF FM/AM Radio plugin for Lyrion Music Server
 #
-# Plays FM radio directly from a TEF668X USB tuner connected to the LMS server.
-# No Icecast server is required — audio is piped from the USB audio device
-# through ffmpeg directly into LMS's streaming pipeline.
+# Plays FM and AM radio directly from a TEF668X USB tuner connected to the
+# LMS server. No Icecast server is required — audio is piped from the USB
+# audio device through ffmpeg directly into LMS's streaming pipeline.
 #
 # How it works:
 #   1. The plugin registers the tefradio:// URL scheme.
-#   2. Station URLs look like:  tefradio://90.8  (frequency in MHz)
+#   2. Station URLs look like:  tefradio://90.8  (FM MHz)
+#                            or tefradio://810   (AM kHz)
 #   3. When Lyrion plays such a URL, ProtocolHandler::new() spawns tef-stream.pl,
-#      which tunes the TEF via serial then exec()s into ffmpeg (ALSA → MP3 → stdout).
+#      which does the startup handshake, tunes the TEF via serial, then exec()s
+#      into ffmpeg (ALSA → MP3 → stdout).
 #   4. LMS reads MP3 frames from the pipe and delivers them to the player.
 #
 # Installation:
 #   Copy the TEFRadio/ directory into your LMS Plugins directory, restart LMS,
-#   then configure via Settings → Plugins → TEF FM Radio.
+#   then configure via Settings → Plugins → TEF FM/AM Radio.
 #
 # Requirements:
 #   - ffmpeg (with libmp3lame)
@@ -39,17 +41,23 @@ my $log = Slim::Utils::Log->addLogCategory({
 my $prefs = preferences('plugin.tefradio');
 
 # ─── Default station presets ──────────────────────────────────────────────────
-# Users can edit these via Settings → Plugins → TEF FM Radio.
+# FM stations: freq in MHz (65.0–108.0)
+# AM stations: freq in kHz (144–30000)
+# Users can edit these via Settings → Plugins → TEF FM/AM Radio.
 
 my @DEFAULT_STATIONS = (
-    { name => 'DR P1',      freq => 90.8  },
-    { name => 'DR P2',      freq => 96.5  },
-    { name => 'DR P3',      freq => 97.0  },
-    { name => 'DR P4 Kbh', freq => 93.9  },
-    { name => 'DR P5',      freq => 103.9 },
-    { name => 'Radio 100',  freq => 100.0 },
-    { name => 'Hits FM',    freq => 95.9  },
-    { name => 'Radio Soft', freq => 96.1  },
+    # FM (MHz)
+    { name => 'DR P1',            freq => 90.8  },
+    { name => 'DR P2',            freq => 96.5  },
+    { name => 'DR P3',            freq => 97.0  },
+    { name => 'DR P4 Kbh',        freq => 93.9  },
+    { name => 'DR P5',            freq => 103.9 },
+    { name => 'Radio 100',        freq => 100.0 },
+    { name => 'Hits FM',          freq => 95.9  },
+    { name => 'Radio Soft',       freq => 96.1  },
+    # AM (kHz)
+    { name => 'BBC Radio 4',      freq => 198   },   # LW 198 kHz
+    { name => 'BBC World Service', freq => 648  },   # MW 648 kHz
 );
 
 # ─── Plugin lifecycle ─────────────────────────────────────────────────────────
@@ -85,7 +93,7 @@ sub initPlugin {
         is_app => 1,
     );
 
-    $log->info('TEF FM Radio plugin initialised');
+    $log->info('TEF FM/AM Radio plugin initialised');
 }
 
 sub getDisplayName { 'PLUGIN_TEFRADIO' }
@@ -103,11 +111,24 @@ sub handleFeed {
     my $stations = $prefs->get('stations') || \@DEFAULT_STATIONS;
 
     my @items = map {
+        my $f = $_->{freq};
+        my ($url, $label);
+
+        if ($f >= 65 && $f <= 108) {
+            # FM: stored as MHz
+            $url   = sprintf('tefradio://%.1f', $f);
+            $label = sprintf('%.1f MHz', $f);
+        } else {
+            # AM: stored as kHz
+            $url   = sprintf('tefradio://%d', int($f));
+            $label = sprintf('%d kHz', int($f));
+        }
+
         {
             name  => $_->{name},
             type  => 'audio',
-            url   => sprintf('tefradio://%.1f', $_->{freq}),
-            line2 => sprintf('%.1f MHz', $_->{freq}),
+            url   => $url,
+            line2 => $label,
         }
     } @$stations;
 

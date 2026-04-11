@@ -1,14 +1,14 @@
 PLUGIN_TEFRADIO
-	EN	TEF FM Radio
-	DA	TEF FM Radio
+	EN	TEF FM/AM Radio
+	DA	TEF FM/AM Radio
 
 PLUGIN_TEFRADIO_DESC
-	EN	FM radio directly from a TEF668X USB tuner — no Icecast required
-	DA	FM-radio direkte fra en TEF668X USB-tuner — ingen Icecast nødvendig
+	EN	FM and AM radio directly from a TEF668X USB tuner — no Icecast required
+	DA	FM- og AM-radio direkte fra en TEF668X USB-tuner — ingen Icecast nødvendig
 
 PLUGIN_TEFRADIO_SETTINGS
-	EN	TEF FM Radio Settings
-	DA	TEF FM Radio-indstillinger
+	EN	TEF FM/AM Radio Settings
+	DA	TEF FM/AM Radio-indstillinger
 
 PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT
 	EN	Serial Port
@@ -39,8 +39,8 @@ PLUGIN_TEFRADIO_SETTINGS_STATIONS
 	DA	Stationsgenveje
 
 PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC
-	EN	One station per line: Name|Frequency (MHz). Example: DR P1|90.8
-	DA	Én station pr. linje: Navn|Frekvens (MHz). Eksempel: DR P1|90.8
+	EN	One station per line: Name|Frequency. FM: MHz (e.g. DR P1|90.8). AM: kHz (e.g. BBC R4|198 or BBC WS|648).
+	DA	Én station pr. linje: Navn|Frekvens. FM: MHz (f.eks. DR P1|90.8). AM: kHz (f.eks. BBC R4|198 eller BBC WS|648).
 
 PLUGIN_TEFRADIO_TUNE_ERROR
 	EN	Could not start TEF radio stream — check serial port and audio device in settings
