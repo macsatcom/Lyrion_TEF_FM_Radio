@@ -39,9 +39,9 @@ SERIAL_PORT        = os.environ.get("SERIAL_PORT",        "/dev/ttyACM0")
 SERIAL_BAUD        = int(os.environ.get("SERIAL_BAUD",    "115200"))
 
 # ALSA device name for the TEF tuner USB audio output.
-# Find yours with: aplay -l  (look for the TEF/FMDX entry)
-# Common examples: hw:CARD=FMDX,DEV=0   or simply  hw:1,0
-AUDIO_DEVICE       = os.environ.get("AUDIO_DEVICE",       "hw:CARD=FMDX,DEV=0")
+# The tuner is a capture device — find it with: arecord -l  (look for the TEF/Tuner entry)
+# Common examples: hw:CARD=Tuner,DEV=0   or simply  hw:1,0
+AUDIO_DEVICE       = os.environ.get("AUDIO_DEVICE",       "hw:CARD=Tuner,DEV=0")
 
 ICECAST_HOST       = os.environ.get("ICECAST_HOST",       "your-icecast-host")
 ICECAST_PORT       = int(os.environ.get("ICECAST_PORT",   "8000"))
@@ -75,6 +75,20 @@ def serial_open():
     serial_conn = serial.Serial(SERIAL_PORT, SERIAL_BAUD, timeout=1)
     time.sleep(0.1)
     print(f"[serial] opened {SERIAL_PORT} at {SERIAL_BAUD} baud")
+
+def serial_startup_handshake():
+    """Send startup command 'x' and wait for 'OK' from tuner (blocking)."""
+    serial_conn.reset_input_buffer()
+    serial_conn.write(b"x\n")
+    serial_conn.flush()
+    print("[serial] → x  (startup)")
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        line = serial_conn.readline().decode(errors="replace").strip()
+        if line == "OK":
+            print("[tuner] startup OK")
+            return
+    print("[tuner] WARNING: no OK received — tuner may not be ready")
 
 def serial_send(cmd):
     """Send a single command line to the tuner, e.g. 'T90800' or 'M0'."""
@@ -119,11 +133,12 @@ def _handle_serial_line(line):
         print(f"[tuner] freq={arg} kHz")
 
     elif cmd == 'P':
-        # RDS PI code (hex, e.g. '3201' = DR P1)
+        # RDS PI code (hex, e.g. '3201' = DR P1). Strip trailing '?' uncertainty markers.
+        pi = arg.rstrip('?')
         with state_lock:
-            if state["pi"] != arg:
-                state["pi"] = arg
-                print(f"[rds] PI={arg}")
+            if state["pi"] != pi:
+                state["pi"] = pi
+                print(f"[rds] PI={pi}")
 
     elif cmd == 'S':
         # Signal quality report — ignore for now
@@ -245,10 +260,35 @@ class FMHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         parsed = urlparse(self.path)
 
+        # GET /
+        if parsed.path == "/":
+            _json(self, 200, {
+                "endpoints": [
+                    "GET  /status",
+                    "GET  /listen/<freq>   (MHz or Hz)",
+                    "POST /tune?freq=<hz>",
+                    "POST /stop",
+                ]
+            })
+
         # GET /status
-        if parsed.path == "/status":
+        elif parsed.path == "/status":
             with state_lock:
                 _json(self, 200, dict(state))
+
+        # GET /tune?freq=90800000  (same as POST /tune but via GET — used by the LMS plugin)
+        elif parsed.path == "/tune":
+            qs = parse_qs(parsed.query)
+            raw = qs.get("freq", [None])[0]
+            if not raw:
+                _json(self, 400, {"error": "missing freq parameter"})
+                return
+            freq_hz = _parse_freq(raw)
+            if not freq_hz:
+                _json(self, 400, {"error": f"invalid or out-of-band frequency: {raw}"})
+                return
+            tune(freq_hz)
+            _json(self, 200, {"ok": True, "freq": freq_hz})
 
         # GET /listen/90.8  or  /listen/90800000
         elif parsed.path.startswith("/listen/"):
@@ -328,11 +368,12 @@ if __name__ == "__main__":
     print(f"[daemon] opening serial port {SERIAL_PORT}...")
     serial_open()
 
+    # Send startup handshake — tuner sits idle until it receives 'x'
+    serial_startup_handshake()
+
     # Start background thread to read tuner responses (RDS, signal quality, etc.)
     threading.Thread(target=serial_reader, daemon=True).start()
 
-    # Give the tuner a moment after serial open, then initialise
-    time.sleep(0.5)
     serial_send("M0")                            # FM mode (0 = FM, 1 = AM)
     serial_send(f"T{_hz_to_khz(STARTUP_FREQ)}")  # startup frequency
 

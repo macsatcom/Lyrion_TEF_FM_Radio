@@ -347,10 +347,11 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
     # to catch the much rarer RDS groups in the readline loop.
     tuner.send_simple("I0", "I")
 
-    tuner.send_tune(freq_khz)
-
-    # Flush again: send_tune may have left stale echoes in the buffer
-    tuner.ser.reset_input_buffer()
+    # Send tune command and wait only for the T-echo — do NOT use send_tune()
+    # here because send_tune() drains the buffer for up to ~0.5 s after the
+    # echo, silently discarding any RDS groups that arrive in that window.
+    tuner._send(f"T{freq_khz}")
+    tuner._read_until(lambda l: l.startswith('T'), timeout=DEFAULT_TIMEOUT)
 
     ps = [' '] * 8          # 8-char Programme Service name
     seen_segs = set()
@@ -486,7 +487,9 @@ def cmd_scan(args, tuner):
 
 def cmd_monitor(args, tuner):
     """Display all serial output from the tuner in real time."""
-    if args.interval is not None:
+    if args.no_quality:
+        tuner.send_simple("I0", 'I')
+    elif args.interval is not None:
         tuner.send_simple(f"I{args.interval}", 'I')
 
     print("Monitoring tuner output (Ctrl+C to stop)...\n")
@@ -499,6 +502,8 @@ def cmd_monitor(args, tuner):
             c = line[0]
 
             if c == 'S':
+                if args.no_quality:
+                    continue
                 q = _parse_quality(line)
                 if q:
                     if args.json:
@@ -541,6 +546,9 @@ def cmd_monitor(args, tuner):
 
     except KeyboardInterrupt:
         pass
+    finally:
+        if args.no_quality:
+            tuner.send_simple("I66", 'I')
 
 
 def cmd_rds(args, tuner):

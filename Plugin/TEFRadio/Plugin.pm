@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.4';
+$VERSION = '0.5';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -30,6 +30,8 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
+
+use Plugins::TEFRadio::Settings;
 
 my $log = Slim::Utils::Log->addLogCategory({
     category     => 'plugin.tefradio',
