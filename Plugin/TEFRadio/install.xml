@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<extension>
+    <name>PLUGIN_TEFRADIO</name>
+    <module>Plugins::TEFRadio::Plugin</module>
+    <playerMenu>RADIO</playerMenu>
+
+    <description>PLUGIN_TEFRADIO_DESC</description>
+
+    <creator>Kasper S Nielsen</creator>
+    <creatorEmail>kasper@smsweb.dk</creatorEmail>
+    <optionsURL>plugins/TEFRadio/settings/basic.html</optionsURL>
+
+    <defaultState>enabled</defaultState>
+    <version>0.1</version>
+
+    <targetApplication>
+        <id>SqueezeCenter</id>
+        <minVersion>8.0</minVersion>
+        <maxVersion>*</maxVersion>
+    </targetApplication>
+</extension>

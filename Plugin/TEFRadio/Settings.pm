@@ -1,0 +1,68 @@
+package Plugins::TEFRadio::Settings;
+
+# Settings page for the TEF FM Radio plugin.
+# Accessible via LMS web UI: Settings → Plugins → TEF FM Radio
+#
+# Preferences managed here:
+#   serial_port   — USB serial control port  (e.g. /dev/ttyACM0)
+#   audio_device  — ALSA capture device name (e.g. hw:CARD=Tuner,DEV=0)
+#   bitrate       — MP3 bitrate for the audio stream (e.g. 192k)
+#   stations      — Array of { name, freq } hashes
+#   stations_text — Human-editable "Name|Freq" text representation of stations
+
+use strict;
+use warnings;
+
+use base qw(Slim::Web::Settings);
+
+use Slim::Utils::Log;
+use Slim::Utils::Prefs;
+
+my $log   = logger('plugin.tefradio');
+my $prefs = preferences('plugin.tefradio');
+
+sub name { 'PLUGIN_TEFRADIO_SETTINGS' }
+sub page { 'plugins/TEFRadio/settings/basic.html' }
+
+# The base class auto-saves these scalar prefs from the form POST
+sub prefs { return ($prefs, qw(serial_port audio_device bitrate stations_text)) }
+
+sub handler {
+    my ($class, $client, $params) = @_;
+
+    if ($params->{saveSettings}) {
+        my $raw = $params->{stations_text} // '';
+
+        my @stations;
+        for my $line (split /\r?\n/, $raw) {
+            $line =~ s/^\s+|\s+$//g;
+            next unless $line;
+
+            my ($name, $freq) = split /\|/, $line, 2;
+            next unless defined $name && defined $freq;
+
+            $name =~ s/^\s+|\s+$//g;
+            $freq =~ s/^\s+|\s+$//g;
+
+            if ($name ne '' && $freq =~ /^\d+\.?\d*$/) {
+                my $f = $freq + 0;
+                if ($f >= 87.5 && $f <= 108.0) {
+                    push @stations, { name => $name, freq => $f };
+                } else {
+                    $log->warn("TEFRadio settings: skipping out-of-band frequency $f MHz ($name)");
+                }
+            }
+        }
+
+        $prefs->set('stations', \@stations);
+        $log->info('TEFRadio settings: saved ' . scalar(@stations) . ' station presets');
+    }
+
+    # Always regenerate the textarea from the saved station array
+    my $stations = $prefs->get('stations') || [];
+    $params->{stations_text} = join "\n", map { "$_->{name}|$_->{freq}" } @$stations;
+
+    return $class->SUPER::handler($client, $params);
+}
+
+1;

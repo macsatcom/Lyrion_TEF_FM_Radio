@@ -1,0 +1,47 @@
+PLUGIN_TEFRADIO
+	EN	TEF FM Radio
+	DA	TEF FM Radio
+
+PLUGIN_TEFRADIO_DESC
+	EN	FM radio directly from a TEF668X USB tuner — no Icecast required
+	DA	FM-radio direkte fra en TEF668X USB-tuner — ingen Icecast nødvendig
+
+PLUGIN_TEFRADIO_SETTINGS
+	EN	TEF FM Radio Settings
+	DA	TEF FM Radio-indstillinger
+
+PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT
+	EN	Serial Port
+	DA	Seriel port
+
+PLUGIN_TEFRADIO_SETTINGS_SERIAL_PORT_DESC
+	EN	USB serial control port for the TEF tuner (e.g. /dev/ttyACM0). Find it with: ls /dev/ttyACM*
+	DA	USB seriel kontrolport til TEF-tuneren (f.eks. /dev/ttyACM0). Find den med: ls /dev/ttyACM*
+
+PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE
+	EN	ALSA Audio Device
+	DA	ALSA-lydenhed
+
+PLUGIN_TEFRADIO_SETTINGS_AUDIO_DEVICE_DESC
+	EN	ALSA capture device name for the TEF USB audio output (e.g. hw:CARD=Tuner,DEV=0). Find it with: arecord -l
+	DA	ALSA-optagelsesenhed til TEF USB-lydudgang (f.eks. hw:CARD=Tuner,DEV=0). Find den med: arecord -l
+
+PLUGIN_TEFRADIO_SETTINGS_BITRATE
+	EN	MP3 Bitrate
+	DA	MP3-bithastighed
+
+PLUGIN_TEFRADIO_SETTINGS_BITRATE_DESC
+	EN	Audio encoding bitrate passed to ffmpeg (e.g. 192k, 256k, 320k)
+	DA	Lydkodningsbithastighed til ffmpeg (f.eks. 192k, 256k, 320k)
+
+PLUGIN_TEFRADIO_SETTINGS_STATIONS
+	EN	Station Presets
+	DA	Stationsgenveje
+
+PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC
+	EN	One station per line: Name|Frequency (MHz). Example: DR P1|90.8
+	DA	Én station pr. linje: Navn|Frekvens (MHz). Eksempel: DR P1|90.8
+
+PLUGIN_TEFRADIO_TUNE_ERROR
+	EN	Could not start TEF radio stream — check serial port and audio device in settings
+	DA	Kunne ikke starte TEF-radiostream — tjek seriel port og lydenhed i indstillinger
