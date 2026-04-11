@@ -31,6 +31,7 @@ use warnings;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
+use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::PP;
 use POSIX ();
 
@@ -93,6 +94,16 @@ sub new {
             $log->error("TEFRadio: cannot spawn tef-stream.pl: $!");
             return undef;
         };
+
+    # LMS uses a non-blocking event loop (IO::Select). A blocking pipe stalls
+    # the loop during ffmpeg's startup delay and causes LMS to abort the stream.
+    {
+        my $flags = fcntl($fh, F_GETFL, 0);
+        if (defined $flags) {
+            fcntl($fh, F_SETFL, $flags | O_NONBLOCK)
+                or $log->warn("TEFRadio: cannot set pipe non-blocking: $!");
+        }
+    }
 
     # ── Spawn RDS background reader ───────────────────────────────────────────
     # tef-stream.pl closes the serial port before exec()ing ffmpeg, so
