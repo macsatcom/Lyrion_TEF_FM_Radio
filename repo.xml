@@ -9,7 +9,7 @@
             <desc lang="EN">FM and AM radio via TEF668X USB tuner — RDS metadata, FM scan, direct pipe into LMS</desc>
             <url>https://github.com/macsatcom/Lyrion_TEF_FM_Radio/releases/download/plugin-v0.14/TEFRadio-0.14.zip</url>
             <link>https://github.com/macsatcom/Lyrion_TEF_FM_Radio</link>
-            <sha>16db4493c51739a2431170f5f3e2a1ac1f70d408</sha>
+            <sha>8abec5b203174747b9404c80f91267f557f8526b</sha>
             <creator>Kasper S Nielsen</creator>
             <creatorEmail>kasper@smsweb.dk</creatorEmail>
         </plugin>
