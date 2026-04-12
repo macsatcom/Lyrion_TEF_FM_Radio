@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.17';
+$VERSION = '0.18';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -89,6 +89,15 @@ sub initPlugin {
         weight => 1,
     );
 
+    $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .
+        $prefs->get('serial_port') . ' device=' . $prefs->get('audio_device'));
+}
+
+# Called after all plugins are initialised and custom-convert.conf is loaded.
+# This is the correct place to patch the transcoding table (Spotty does the same).
+sub postinitPlugin { if (main::TRANSCODING) {
+    my $class = shift;
+
     # Inject actual paths/prefs into the transcoding command loaded from
     # custom-convert.conf (placeholders: TSCRIPT SERL DEVI BITR).
     _updateTranscodingTable();
@@ -96,10 +105,7 @@ sub initPlugin {
     # Re-inject whenever the user saves new settings
     $prefs->setChange(sub { _updateTranscodingTable() },
         qw(serial_port audio_device bitrate));
-
-    $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .
-        $prefs->get('serial_port') . ' device=' . $prefs->get('audio_device'));
-}
+} }
 
 sub _updateTranscodingTable {
     my $dir    = _plugin_dir();
