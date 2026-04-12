@@ -35,7 +35,6 @@ use warnings;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
-use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::PP;
 use POSIX ();
 
@@ -109,16 +108,6 @@ sub new {
             $log->error("TEFRadio: cannot spawn tef-stream.pl: $!");
             return undef;
         };
-
-    # Make the read end non-blocking so LMS's IO::Select event loop can
-    # wait for ffmpeg data without stalling the server.
-    {
-        my $flags = fcntl($fh, F_GETFL, 0);
-        if (defined $flags) {
-            fcntl($fh, F_SETFL, $flags | O_NONBLOCK)
-                or $log->warn("TEFRadio: cannot set pipe non-blocking: $!");
-        }
-    }
 
     # Spawn RDS background reader
     _spawn_rds_reader($rds_script, $port, $freq_khz) if -f $rds_script;
