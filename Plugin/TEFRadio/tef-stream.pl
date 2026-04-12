@@ -54,9 +54,13 @@ my $ffmpeg = do {
     (-x $bundled) ? $bundled : 'ffmpeg';
 };
 
-# ── 1. Kill any existing RDS reader ──────────────────────────────────────
+# ── 1. Kill all running RDS readers (any frequency) ──────────────────────
+# The previous station's RDS reader holds the serial port; kill it so we
+# can tune without interference.
 my $rds_pidfile = "/tmp/tefradio-rds-${freq_khz}.json.pid";
-_kill_rds($rds_pidfile);
+for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
+    _kill_rds($pf);
+}
 
 # ── 2. Tune hardware ──────────────────────────────────────────────────────
 _tune($port, $freq_khz);
