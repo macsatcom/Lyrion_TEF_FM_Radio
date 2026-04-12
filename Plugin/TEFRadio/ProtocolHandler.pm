@@ -38,9 +38,10 @@ use POSIX ();
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
 
-# PID of the currently running tef-rds.pl process (if any)
-my $rds_pid     = undef;
-my $rds_pidfile = undef;
+# ── Process tracking (module-level, one active stream at a time) ──────────────
+my $stream_pid  = undef;   # PID of the current tef-stream.pl → ffmpeg process
+my $rds_pid     = undef;   # PID of the current tef-rds.pl process
+my $rds_pidfile = undef;   # Path to tef-rds.pl's pidfile
 
 # ─── Protocol capabilities ────────────────────────────────────────────────────
 
@@ -88,44 +89,84 @@ sub new {
         _khz_label($freq_khz), $port, $device
     ));
 
-    # ── Spawn audio stream (tef-stream.pl → ffmpeg → stdout pipe → LMS) ──────
-    open(my $fh, '-|', $^X, $stream_script, $port, $freq_khz, $device, $bitrate)
-        or do {
-            $log->error("TEFRadio: cannot spawn tef-stream.pl: $!");
-            return undef;
-        };
+    # Kill any running stream and RDS processes before starting new ones.
+    # This prevents process accumulation when the user switches stations.
+    _kill_stream();
+    _kill_rds_reader();
 
-    # LMS uses a non-blocking event loop (IO::Select). A blocking pipe stalls
-    # the loop during ffmpeg's startup delay and causes LMS to abort the stream.
+    # ── Create pipe + fork so we have the child PID ───────────────────────────
+    # We use fork/exec instead of open('-|') so we can kill the process
+    # explicitly when the stream is stopped or a new station is selected.
+    my ($rd, $wr);
+    unless (pipe $rd, $wr) {
+        $log->error("TEFRadio: pipe() failed: $!");
+        return undef;
+    }
+
+    my $pid = fork();
+    unless (defined $pid) {
+        $log->error("TEFRadio: fork() failed: $!");
+        CORE::close($rd); CORE::close($wr);
+        return undef;
+    }
+
+    if ($pid == 0) {
+        # ── Child process ────────────────────────────────────────────────────
+        # Redirect stdout to the write end of the pipe so ffmpeg's MP3
+        # output flows to LMS.
+        POSIX::dup2(CORE::fileno($wr), 1) or POSIX::_exit(1);
+
+        # Close all inherited file descriptors (LMS has many open sockets,
+        # database handles, etc.).  Closing them here prevents the child
+        # (and the ffmpeg it execs into) from keeping LMS's connections alive.
+        # Starts at 3 to keep stdin(0), stdout(1=pipe), stderr(2).
+        for my $fd (3 .. 1023) {
+            POSIX::close($fd);
+        }
+
+        exec($^X, $stream_script, $port, $freq_khz, $device, $bitrate);
+        POSIX::_exit(1);
+    }
+
+    # ── Parent process ────────────────────────────────────────────────────────
+    CORE::close($wr);       # Parent only needs the read end
+    $stream_pid = $pid;
+    $log->info("TEFRadio: stream process PID $pid");
+
+    # Set the read end non-blocking so LMS's IO::Select event loop can
+    # wait for data without stalling the server during ffmpeg's startup.
     {
-        my $flags = fcntl($fh, F_GETFL, 0);
+        my $flags = fcntl($rd, F_GETFL, 0);
         if (defined $flags) {
-            fcntl($fh, F_SETFL, $flags | O_NONBLOCK)
+            fcntl($rd, F_SETFL, $flags | O_NONBLOCK)
                 or $log->warn("TEFRadio: cannot set pipe non-blocking: $!");
         }
     }
 
     # ── Spawn RDS background reader ───────────────────────────────────────────
-    # tef-stream.pl closes the serial port before exec()ing ffmpeg, so
-    # tef-rds.pl can open it ~0.7s later without conflict.
     _spawn_rds_reader($rds_script, $port, $freq_khz) if -f $rds_script;
 
-    bless $fh, $class;
-    return $fh;
+    bless $rd, $class;
+    return $rd;
+}
+
+# ─── Process management ───────────────────────────────────────────────────────
+
+sub _kill_stream {
+    return unless defined $stream_pid;
+    $log->info("TEFRadio: killing stream PID $stream_pid");
+    kill('TERM', $stream_pid);
+    waitpid($stream_pid, POSIX::WNOHANG());
+    $stream_pid = undef;
 }
 
 sub _spawn_rds_reader {
     my ($script, $port, $freq_khz) = @_;
 
-    # Kill any previously running RDS reader
-    _kill_rds_reader();
-
     my $json_file = "/tmp/tefradio-rds-${freq_khz}.json";
     $rds_pidfile  = "$json_file.pid";
 
-    # Fork a child that immediately daemonises and exec()s tef-rds.pl.
-    # We use double-fork so the grandchild is re-parented to init (PID 1),
-    # keeping LMS's process table clean.
+    # Double-fork so the grandchild is re-parented to init, keeping LMS clean.
     my $pid = fork();
     if (!defined $pid) {
         $log->warn("TEFRadio: fork failed for RDS reader: $!");
@@ -133,24 +174,24 @@ sub _spawn_rds_reader {
     }
 
     if ($pid == 0) {
-        # ── First child: fork again, then exit ──
+        # ── First child ──
         my $gc = fork();
-        if (!defined $gc) { exit 1; }
-        if ($gc != 0)     { exit 0; }   # first child exits — grandchild lives on
+        if (!defined $gc) { POSIX::_exit(1); }
+        if ($gc != 0)     { POSIX::_exit(0); }   # first child exits
 
-        # ── Grandchild: become session leader, redirect fds, exec ──
+        # ── Grandchild ──
         POSIX::setsid();
         open(STDIN,  '<', '/dev/null');
         open(STDOUT, '>', '/dev/null');
         open(STDERR, '>', '/dev/null');
         exec($^X, $script, $port, $freq_khz, $json_file);
-        exit 1;
+        POSIX::_exit(1);
     }
 
-    # Parent: reap the first child immediately (grandchild is now orphan → init)
-    waitpid($pid, 0);
+    waitpid($pid, 0);   # Reap first child; grandchild is now orphaned → init
 
-    $log->info("TEFRadio: RDS reader started for ${\_khz_label($freq_khz)}, json=$json_file");
+    $log->info("TEFRadio: RDS reader started for " . _khz_label($freq_khz) .
+               ", json=$json_file");
 }
 
 sub _kill_rds_reader {
@@ -190,7 +231,18 @@ sub read {
 
 sub close {
     my $self = shift;
+    $log->info("TEFRadio: stream close() — killing child processes");
+    _kill_stream();
+    _kill_rds_reader();
     CORE::close($self);
+}
+
+sub DESTROY {
+    my $self = shift;
+    # Ensure cleanup even if LMS drops the reference without calling close()
+    _kill_stream();
+    _kill_rds_reader();
+    CORE::close($self) if defined CORE::fileno($self);
 }
 
 # ─── Metadata ─────────────────────────────────────────────────────────────────
@@ -210,27 +262,19 @@ sub getMetadataFor {
     # ── Read live RDS data from tef-rds.pl output ─────────────────────────────
     my $rds = defined $freq_khz ? _read_rds($freq_khz) : undef;
 
-    # PS name (8-char station name from RDS), trimmed
     my $ps = ($rds && $rds->{ps}) ? $rds->{ps} : '';
     $ps =~ s/^\s+|\s+$//g;
 
-    # RadioText (up to 64 chars "now playing" text from RDS)
     my $rt = ($rds && $rds->{rt}) ? $rds->{rt} : '';
     $rt =~ s/^\s+|\s+$//g;
 
-    # Title priority: preset name > RDS PS name > frequency label
-    my $title = $preset_name // ($ps || "TEF Radio $freq_label");
-
-    # Artist/subtitle: RadioText if available, otherwise frequency label
+    my $title  = $preset_name // ($ps || "TEF Radio $freq_label");
     my $artist = $rt || $freq_label;
-
-    # Album: show signal quality flag if we have it
-    my $album  = 'TEF FM/AM Radio';
 
     return {
         title  => $title,
         artist => $artist,
-        album  => $album,
+        album  => 'TEF FM/AM Radio',
         cover  => undef,
         icon   => Slim::Player::ProtocolHandlers->iconForURL($url),
         type   => (defined $freq_khz && $freq_khz >= 65000) ? 'FM Radio' : 'AM Radio',
@@ -244,12 +288,11 @@ sub _url_to_khz {
     my $f = $freq_str + 0;
 
     if ($freq_str =~ /\./ || ($f >= 65 && $f < 144)) {
-        # Decimal, or integer in FM-only zone (65–143 can't be AM kHz)
         return int($f * 1000 + 0.5);
     } elsif ($f >= 65000 && $f <= 108000) {
-        return int($f);       # FM in kHz
+        return int($f);
     } elsif ($f >= 144 && $f <= 30000) {
-        return int($f);       # AM in kHz (LW/MW/SW)
+        return int($f);
     }
     return undef;
 }
@@ -275,8 +318,6 @@ sub _read_rds {
     my ($freq_khz) = @_;
     my $file = "/tmp/tefradio-rds-${freq_khz}.json";
     return undef unless -f $file;
-
-    # Don't use stale data older than 30 seconds
     return undef if (time() - (stat $file)[9]) > 30;
 
     local $/;
