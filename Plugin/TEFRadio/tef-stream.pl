@@ -36,6 +36,11 @@ my ($port, $freq_khz, $alsa_dev, $bitrate) = @ARGV;
 $bitrate  //= '192k';
 $freq_khz   = int($freq_khz);
 
+# Write our PID immediately so ProtocolHandler can kill us on station change.
+# exec() preserves the PID, so this stays valid after we exec ffmpeg.
+my $_pidfile = '/tmp/tefradio-stream.pid';
+if (open my $_pf, '>', $_pidfile) { print $_pf $$; close $_pf }
+
 # Locate ffmpeg: prefer system PATH, fall back to the bundled static binary
 # that lives alongside this script in the plugin directory.
 my $ffmpeg = do {

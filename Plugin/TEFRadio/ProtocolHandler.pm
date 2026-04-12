@@ -4,20 +4,24 @@ package Plugins::TEFRadio::ProtocolHandler;
 #
 # When Lyrion plays e.g. tefradio://90.8 (FM) or tefradio://810 (AM):
 #
-#   1. new() — spawns tef-stream.pl as a child process:
+#   1. new() — spawns tef-stream.pl via open('-|'):
 #                  perl tef-stream.pl <port> <freq_khz> <alsa_dev> <bitrate>
-#              tef-stream.pl does the startup handshake, tunes the TEF via
-#              serial (then closes the port), and exec()s into ffmpeg.
-#              ffmpeg reads ALSA audio and writes MP3 to stdout (→ LMS).
+#              tef-stream.pl writes its PID to /tmp/tefradio-stream.pid, then
+#              does the startup handshake, tunes the TEF via serial, and
+#              exec()s into ffmpeg. exec() preserves the PID so the pidfile
+#              remains valid throughout the ffmpeg lifetime.
 #
-#   2. new() — also spawns tef-rds.pl as a background daemon:
-#                  perl tef-rds.pl <port> <freq_khz> /tmp/tefradio-rds-<freq>.json
-#              tef-rds.pl opens the serial port (now free, since ffmpeg uses
-#              only ALSA) and reads RDS continuously, writing PS name and
-#              RadioText to a JSON file.
+#   2. new() — also spawns tef-rds.pl as a background daemon that reads RDS
+#              from the serial port and writes live PS/RT metadata to a JSON
+#              file in /tmp/.
 #
-#   3. getMetadataFor() — reads that JSON file and returns live RDS data
-#              as the "now playing" title/artist shown in the LMS UI.
+#   3. getMetadataFor() — reads that JSON file and returns live RDS data.
+#
+# Process management:
+#   _kill_stream() reads /tmp/tefradio-stream.pid and SIGTERMs the process.
+#   It is called at the start of new() (kill old before starting new) and
+#   also in close() and DESTROY() so cleanup happens however LMS discards
+#   the stream object.
 #
 # URL frequency conventions:
 #   tefradio://90.8    FM 90.8 MHz  (decimal → MHz)
@@ -38,10 +42,11 @@ use POSIX ();
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
 
-# ── Process tracking (module-level, one active stream at a time) ──────────────
-my $stream_pid  = undef;   # PID of the current tef-stream.pl → ffmpeg process
-my $rds_pid     = undef;   # PID of the current tef-rds.pl process
-my $rds_pidfile = undef;   # Path to tef-rds.pl's pidfile
+# Pidfile written by tef-stream.pl on startup; PID survives exec() into ffmpeg
+my $STREAM_PIDFILE = '/tmp/tefradio-stream.pid';
+
+# Pidfile written by tef-rds.pl on startup
+my $rds_pidfile = undef;
 
 # ─── Protocol capabilities ────────────────────────────────────────────────────
 
@@ -89,75 +94,52 @@ sub new {
         _khz_label($freq_khz), $port, $device
     ));
 
-    # Kill any running stream and RDS processes before starting new ones.
+    # Kill any existing stream and RDS reader before starting new ones.
     # This prevents process accumulation when the user switches stations.
     _kill_stream();
     _kill_rds_reader();
 
-    # ── Create pipe + fork so we have the child PID ───────────────────────────
-    # We use fork/exec instead of open('-|') so we can kill the process
-    # explicitly when the stream is stopped or a new station is selected.
-    my ($rd, $wr);
-    unless (pipe $rd, $wr) {
-        $log->error("TEFRadio: pipe() failed: $!");
-        return undef;
-    }
+    # Spawn audio stream using Perl's built-in open('-|').
+    # This uses a safe fork+exec internally — unlike a raw fork() call it
+    # does NOT confuse LMS's worker-process manager, which would otherwise
+    # mistake a quickly-exiting child for a crashed worker and re-spawn a
+    # full copy of slimserver.pl.
+    open(my $fh, '-|', $^X, $stream_script, $port, $freq_khz, $device, $bitrate)
+        or do {
+            $log->error("TEFRadio: cannot spawn tef-stream.pl: $!");
+            return undef;
+        };
 
-    my $pid = fork();
-    unless (defined $pid) {
-        $log->error("TEFRadio: fork() failed: $!");
-        CORE::close($rd); CORE::close($wr);
-        return undef;
-    }
-
-    if ($pid == 0) {
-        # ── Child process ────────────────────────────────────────────────────
-        # Redirect stdout to the write end of the pipe so ffmpeg's MP3
-        # output flows to LMS.
-        POSIX::dup2(CORE::fileno($wr), 1) or POSIX::_exit(1);
-
-        # Close all inherited file descriptors (LMS has many open sockets,
-        # database handles, etc.).  Closing them here prevents the child
-        # (and the ffmpeg it execs into) from keeping LMS's connections alive.
-        # Starts at 3 to keep stdin(0), stdout(1=pipe), stderr(2).
-        for my $fd (3 .. 1023) {
-            POSIX::close($fd);
-        }
-
-        exec($^X, $stream_script, $port, $freq_khz, $device, $bitrate);
-        POSIX::_exit(1);
-    }
-
-    # ── Parent process ────────────────────────────────────────────────────────
-    CORE::close($wr);       # Parent only needs the read end
-    $stream_pid = $pid;
-    $log->info("TEFRadio: stream process PID $pid");
-
-    # Set the read end non-blocking so LMS's IO::Select event loop can
-    # wait for data without stalling the server during ffmpeg's startup.
+    # Make the read end non-blocking so LMS's IO::Select event loop can
+    # wait for ffmpeg data without stalling the server.
     {
-        my $flags = fcntl($rd, F_GETFL, 0);
+        my $flags = fcntl($fh, F_GETFL, 0);
         if (defined $flags) {
-            fcntl($rd, F_SETFL, $flags | O_NONBLOCK)
+            fcntl($fh, F_SETFL, $flags | O_NONBLOCK)
                 or $log->warn("TEFRadio: cannot set pipe non-blocking: $!");
         }
     }
 
-    # ── Spawn RDS background reader ───────────────────────────────────────────
+    # Spawn RDS background reader
     _spawn_rds_reader($rds_script, $port, $freq_khz) if -f $rds_script;
 
-    bless $rd, $class;
-    return $rd;
+    bless $fh, $class;
+    return $fh;
 }
 
 # ─── Process management ───────────────────────────────────────────────────────
 
 sub _kill_stream {
-    return unless defined $stream_pid;
-    $log->info("TEFRadio: killing stream PID $stream_pid");
-    kill('TERM', $stream_pid);
-    waitpid($stream_pid, POSIX::WNOHANG());
-    $stream_pid = undef;
+    return unless -f $STREAM_PIDFILE;
+    if (open my $pf, '<', $STREAM_PIDFILE) {
+        my $pid = <$pf>; chomp $pid;
+        close $pf;
+        if ($pid =~ /^\d+$/) {
+            kill('TERM', $pid);
+            $log->info("TEFRadio: sent SIGTERM to stream PID $pid");
+        }
+    }
+    unlink $STREAM_PIDFILE;
 }
 
 sub _spawn_rds_reader {
@@ -254,12 +236,10 @@ sub getMetadataFor {
     my $freq_khz   = defined $freq_str ? _url_to_khz($freq_str) : undef;
     my $freq_label = defined $freq_khz ? _khz_label($freq_khz)  : 'Radio';
 
-    # ── Try to find a matching preset name ────────────────────────────────────
     my $stations = $prefs->get('stations') || [];
     my ($match)  = grep { _station_matches($_, $freq_khz) } @$stations;
     my $preset_name = $match ? $match->{name} : undef;
 
-    # ── Read live RDS data from tef-rds.pl output ─────────────────────────────
     my $rds = defined $freq_khz ? _read_rds($freq_khz) : undef;
 
     my $ps = ($rds && $rds->{ps}) ? $rds->{ps} : '';
