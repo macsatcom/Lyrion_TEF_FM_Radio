@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.16';
+$VERSION = '0.17';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -30,6 +30,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
+use Slim::Player::TranscodingHelper;
 
 use Plugins::TEFRadio::Settings;
 
@@ -88,8 +89,35 @@ sub initPlugin {
         weight => 1,
     );
 
+    # Inject actual paths/prefs into the transcoding command loaded from
+    # custom-convert.conf (placeholders: TSCRIPT SERL DEVI BITR).
+    _updateTranscodingTable();
+
+    # Re-inject whenever the user saves new settings
+    $prefs->setChange(sub { _updateTranscodingTable() },
+        qw(serial_port audio_device bitrate));
+
     $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .
         $prefs->get('serial_port') . ' device=' . $prefs->get('audio_device'));
+}
+
+sub _updateTranscodingTable {
+    my $dir    = _plugin_dir();
+    my $script = $^X . ' ' . catfile($dir, 'tef-stream.pl');
+    my $port   = $prefs->get('serial_port')  // '/dev/ttyACM0';
+    my $device = $prefs->get('audio_device') // 'hw:CARD=Tuner,DEV=0';
+    my $bitrate = $prefs->get('bitrate')     // '192k';
+
+    my $cmd_table = Slim::Player::TranscodingHelper::Conversions();
+    for my $key (keys %$cmd_table) {
+        next unless $key =~ /^tef-/;
+        $cmd_table->{$key} =~ s{TSCRIPT}{$script}g;
+        $cmd_table->{$key} =~ s{SERL}{$port}g;
+        $cmd_table->{$key} =~ s{DEVI}{$device}g;
+        $cmd_table->{$key} =~ s{BITR}{$bitrate}g;
+    }
+
+    $log->info("TEFRadio: transcoder command → $script \$URL\$ $port $device $bitrate");
 }
 
 sub getDisplayName { 'PLUGIN_TEFRADIO' }

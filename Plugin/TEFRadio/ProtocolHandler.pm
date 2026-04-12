@@ -2,26 +2,19 @@ package Plugins::TEFRadio::ProtocolHandler;
 
 # Protocol handler for tefradio:// URLs.
 #
-# When Lyrion plays e.g. tefradio://90.8 (FM) or tefradio://810 (AM):
+# Audio streaming uses LMS's native transcoder pipeline (like Spotty):
+#   custom-types.conf  — registers the 'tef' format
+#   custom-convert.conf — maps tef→mp3 via tef-stream.pl
 #
-#   1. new() — spawns tef-stream.pl via open('-|'):
-#                  perl tef-stream.pl <port> <freq_khz> <alsa_dev> <bitrate>
-#              tef-stream.pl writes its PID to /tmp/tefradio-stream.pid, then
-#              does the startup handshake, tunes the TEF via serial, and
-#              exec()s into ffmpeg. exec() preserves the PID so the pidfile
-#              remains valid throughout the ffmpeg lifetime.
+# LMS starts tef-stream.pl as a transcoder subprocess.  tef-stream.pl:
+#   1. Kills any running RDS reader
+#   2. Tunes the TEF chip via serial
+#   3. Spawns tef-rds.pl as a background daemon
+#   4. exec()s ffmpeg → raw MP3 on stdout → LMS reads and sends to player
 #
-#   2. new() — also spawns tef-rds.pl as a background daemon that reads RDS
-#              from the serial port and writes live PS/RT metadata to a JSON
-#              file in /tmp/.
-#
-#   3. getMetadataFor() — reads that JSON file and returns live RDS data.
-#
-# Process management:
-#   _kill_stream() reads /tmp/tefradio-stream.pid and SIGTERMs the process.
-#   It is called at the start of new() (kill old before starting new) and
-#   also in close() and DESTROY() so cleanup happens however LMS discards
-#   the stream object.
+# This module is responsible only for:
+#   - Protocol registration and capabilities
+#   - getMetadataFor() — reads live RDS data from /tmp/tefradio-rds-*.json
 #
 # URL frequency conventions:
 #   tefradio://90.8    FM 90.8 MHz  (decimal → MHz)
@@ -35,18 +28,10 @@ use warnings;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
-use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::PP;
-use POSIX ();
 
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
-
-# Pidfile written by tef-stream.pl on startup; PID survives exec() into ffmpeg
-my $STREAM_PIDFILE = '/tmp/tefradio-stream.pid';
-
-# Pidfile written by tef-rds.pl on startup
-my $rds_pidfile = undef;
 
 # ─── Protocol capabilities ────────────────────────────────────────────────────
 
@@ -54,181 +39,12 @@ sub isRemote        { 1 }
 sub canSeek         { 0 }
 sub isRewindable    { 0 }
 sub canDirectStream { 0 }
-sub getFormatForURL { 'mp3' }
-sub contentType     { 'mp3' }
+sub getFormatForURL { 'tef' }
+sub contentType     { 'tef' }
 
-# ─── Stream construction ──────────────────────────────────────────────────────
-
-sub new {
-    my ($class, $args) = @_;
-
-    my $song = $args->{song};
-    my $url  = $song->currentTrack()->url();
-
-    my ($freq_str) = $url =~ m{^tefradio://(.+)$};
-    unless (defined $freq_str && $freq_str =~ /^\d+\.?\d*$/) {
-        $log->error("TEFRadio: malformed URL: $url");
-        return undef;
-    }
-
-    my $freq_khz = _url_to_khz($freq_str);
-    unless (defined $freq_khz) {
-        $log->error("TEFRadio: frequency out of range: $freq_str");
-        return undef;
-    }
-
-    my $port    = $prefs->get('serial_port')  // '/dev/ttyACM0';
-    my $device  = $prefs->get('audio_device') // 'hw:CARD=Tuner,DEV=0';
-    my $bitrate = $prefs->get('bitrate')       // '192k';
-    my $dir     = _plugin_dir();
-    my $stream_script = catfile($dir, 'tef-stream.pl');
-    my $rds_script    = catfile($dir, 'tef-rds.pl');
-
-    unless (-f $stream_script) {
-        $log->error("TEFRadio: tef-stream.pl not found at $stream_script");
-        return undef;
-    }
-
-    $log->info(sprintf(
-        "TEFRadio: starting stream — %s, port=%s, device=%s",
-        _khz_label($freq_khz), $port, $device
-    ));
-
-    # Kill any existing stream and RDS reader before starting new ones.
-    # This prevents process accumulation when the user switches stations.
-    _kill_stream();
-    _kill_rds_reader();
-
-    # Spawn audio stream using Perl's built-in open('-|').
-    # This uses a safe fork+exec internally — unlike a raw fork() call it
-    # does NOT confuse LMS's worker-process manager, which would otherwise
-    # mistake a quickly-exiting child for a crashed worker and re-spawn a
-    # full copy of slimserver.pl.
-    open(my $fh, '-|', $^X, $stream_script, $port, $freq_khz, $device, $bitrate)
-        or do {
-            $log->error("TEFRadio: cannot spawn tef-stream.pl: $!");
-            return undef;
-        };
-
-    # Spawn RDS background reader
-    _spawn_rds_reader($rds_script, $port, $freq_khz) if -f $rds_script;
-
-    bless $fh, $class;
-    return $fh;
-}
-
-# ─── Process management ───────────────────────────────────────────────────────
-
-sub _kill_stream {
-    return unless -f $STREAM_PIDFILE;
-    if (open my $pf, '<', $STREAM_PIDFILE) {
-        my $pid = <$pf>; chomp $pid;
-        close $pf;
-        if ($pid =~ /^\d+$/) {
-            kill('TERM', $pid);
-            $log->info("TEFRadio: sent SIGTERM to stream PID $pid");
-        }
-    }
-    unlink $STREAM_PIDFILE;
-}
-
-sub _spawn_rds_reader {
-    my ($script, $port, $freq_khz) = @_;
-
-    my $json_file = "/tmp/tefradio-rds-${freq_khz}.json";
-    $rds_pidfile  = "$json_file.pid";
-
-    # Double-fork so the grandchild is re-parented to init, keeping LMS clean.
-    my $pid = fork();
-    if (!defined $pid) {
-        $log->warn("TEFRadio: fork failed for RDS reader: $!");
-        return;
-    }
-
-    if ($pid == 0) {
-        # ── First child ──
-        my $gc = fork();
-        if (!defined $gc) { POSIX::_exit(1); }
-        if ($gc != 0)     { POSIX::_exit(0); }   # first child exits
-
-        # ── Grandchild ──
-        POSIX::setsid();
-        open(STDIN,  '<', '/dev/null');
-        open(STDOUT, '>', '/dev/null');
-        open(STDERR, '>', '/dev/null');
-        exec($^X, $script, $port, $freq_khz, $json_file);
-        POSIX::_exit(1);
-    }
-
-    waitpid($pid, 0);   # Reap first child; grandchild is now orphaned → init
-
-    $log->info("TEFRadio: RDS reader started for " . _khz_label($freq_khz) .
-               ", json=$json_file");
-}
-
-sub _kill_rds_reader {
-    return unless defined $rds_pidfile && -f $rds_pidfile;
-    if (open my $fh, '<', $rds_pidfile) {
-        my $old_pid = <$fh>; chomp $old_pid;
-        close $fh;
-        if ($old_pid =~ /^\d+$/) {
-            kill('TERM', $old_pid);
-            $log->info("TEFRadio: sent SIGTERM to RDS reader PID $old_pid");
-        }
-    }
-    $rds_pidfile = undef;
-}
-
-# ─── IO wrappers (LMS calls these on the blessed filehandle) ─────────────────
-
-sub opened {
-    my $self = shift;
-    return defined CORE::fileno($self);
-}
-
-sub fileno {
-    my $self = shift;
-    return CORE::fileno($self);
-}
-
-sub sysread {
-    my ($self, undef, $maxlen, $offset) = @_;
-    return CORE::sysread($self, $_[1], $maxlen, $offset // 0);
-}
-
-sub read {
-    my ($self, undef, $maxlen, $offset) = @_;
-    return CORE::read($self, $_[1], $maxlen, $offset // 0);
-}
-
-sub blocking {
-    # LMS calls blocking(0) via Slim::Utils::Network to register the fd with
-    # its IO::Select event loop. We honour it by toggling O_NONBLOCK.
-    my ($self, $blocking) = @_;
-    my $flags = fcntl($self, F_GETFL, 0);
-    return unless defined $flags;
-    if (defined $blocking) {
-        my $new = $blocking ? ($flags & ~O_NONBLOCK) : ($flags | O_NONBLOCK);
-        fcntl($self, F_SETFL, $new);
-    }
-    return !($flags & O_NONBLOCK);
-}
-
-sub close {
-    my $self = shift;
-    $log->info("TEFRadio: stream close() — killing child processes");
-    _kill_stream();
-    _kill_rds_reader();
-    CORE::close($self);
-}
-
-sub DESTROY {
-    my $self = shift;
-    # Ensure cleanup even if LMS drops the reference without calling close()
-    _kill_stream();
-    _kill_rds_reader();
-    CORE::close($self) if defined CORE::fileno($self);
-}
+# Called by LMS before starting the transcoder for each new track.
+# Returning 'tef' tells LMS to look up the tef-mp3 conversion rule.
+sub formatOverride  { 'tef' }
 
 # ─── Metadata ─────────────────────────────────────────────────────────────────
 
