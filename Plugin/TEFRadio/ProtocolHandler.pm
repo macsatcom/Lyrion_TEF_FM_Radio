@@ -35,6 +35,7 @@ use warnings;
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
+use Fcntl qw(F_GETFL F_SETFL O_NONBLOCK);
 use JSON::PP;
 use POSIX ();
 
@@ -200,6 +201,19 @@ sub read {
     return CORE::read($self, $_[1], $maxlen, $offset // 0);
 }
 
+sub blocking {
+    # LMS calls blocking(0) via Slim::Utils::Network to register the fd with
+    # its IO::Select event loop. We honour it by toggling O_NONBLOCK.
+    my ($self, $blocking) = @_;
+    my $flags = fcntl($self, F_GETFL, 0);
+    return unless defined $flags;
+    if (defined $blocking) {
+        my $new = $blocking ? ($flags & ~O_NONBLOCK) : ($flags | O_NONBLOCK);
+        fcntl($self, F_SETFL, $new);
+    }
+    return !($flags & O_NONBLOCK);
+}
+
 sub close {
     my $self = shift;
     $log->info("TEFRadio: stream close() — killing child processes");
@@ -292,7 +306,7 @@ sub _read_rds {
     local $/;
     open(my $fh, '<', $file) or return undef;
     my $json = <$fh>;
-    close $fh;
+    CORE::close($fh);
 
     return eval { JSON::PP->new->decode($json) };
 }
