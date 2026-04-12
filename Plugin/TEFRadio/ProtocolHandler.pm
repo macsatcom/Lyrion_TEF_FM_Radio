@@ -25,6 +25,8 @@ package Plugins::TEFRadio::ProtocolHandler;
 use strict;
 use warnings;
 
+use base qw(Slim::Formats::RemoteStream);
+
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
