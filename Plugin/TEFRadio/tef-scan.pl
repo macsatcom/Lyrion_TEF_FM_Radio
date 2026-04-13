@@ -138,6 +138,8 @@ print JSON::PP->new->encode(\@stations), "\n";
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+my $readline_buf = '';   # persistent buffer across _readline calls
+
 sub _send {
     my ($fh, $cmd) = @_;
     syswrite($fh, "$cmd\n");
@@ -146,10 +148,9 @@ sub _send {
 sub _readline {
     my ($sel, $timeout) = @_;
     $timeout = 0.5 if $timeout <= 0;
-    state $buf = '';
     my $dead = time() + $timeout;
     while (time() < $dead) {
-        if ($buf =~ s/^([^\n]*)\n//) {
+        if ($readline_buf =~ s/^([^\n]*)\n//) {
             my $line = $1;
             $line =~ s/\r//g;
             return $line;
@@ -159,7 +160,7 @@ sub _readline {
         next unless @ready;
         my $n = sysread(($sel->handles)[0], my $chunk, 512);
         next unless defined $n && $n > 0;
-        $buf .= $chunk;
+        $readline_buf .= $chunk;
     }
     return undef;
 }
