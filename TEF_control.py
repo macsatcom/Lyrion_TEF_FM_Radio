@@ -104,11 +104,13 @@ class TEFTuner:
             if c in ('M', 'T', 'V', 'A', 'D', 'W'):
                 responses[c] = line[1:]
                 if c == 'T':
-                    # T is always the last meaningful echo after a tune
-                    time.sleep(0.05)   # collect any trailing echoes
+                    # T is always the last meaningful echo after a tune.
+                    # Only collect non-quality trailing lines (S-lines arrive
+                    # continuously and would block forever if not excluded).
+                    time.sleep(0.05)
                     while True:
                         extra = self._readline()
-                        if not extra:
+                        if not extra or extra[0] == 'S':
                             break
                         responses[extra[0]] = extra[1:]
                     break
