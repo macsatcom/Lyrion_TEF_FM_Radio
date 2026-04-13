@@ -30,7 +30,8 @@ sub _log {
 }
 
 my $port      = shift // '/dev/ttyACM0';
-my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 5;   # dBf
+my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 10;  # dBf
+my $cci_max   = 35;   # drop stations with CCI above this
 my $deep      = grep { $_ eq '--deep' } @ARGV;
 
 _log("tef-scan starting: port=$port threshold=$threshold");
@@ -97,6 +98,44 @@ if ($result_line && $result_line =~ /^U(.+)$/) {
         };
     }
     @stations = sort { $b->{rssi} <=> $a->{rssi} } @stations;
+}
+
+# ── Quality check: tune each candidate, measure CCI, drop interference ────────
+if (@stations) {
+    _log(sprintf("quality-checking %d candidates (CCI max %d)", scalar @stations, $cci_max));
+    my @qualified;
+    for my $s (@stations) {
+        _send($tty, "T$s->{freq_khz}");
+        select(undef, undef, undef, 0.35);   # let tuner settle
+
+        # Collect up to 4 quality (S) lines
+        my (@cci_vals, @rssi_vals);
+        my $q_dead = time() + 1.2;
+        while (time() < $q_dead && @cci_vals < 4) {
+            my $line = _readline($sel, $q_dead - time());
+            next unless defined $line && $line =~ /^S(.)([-\d.]+),([-\d]+)/;
+            push @rssi_vals, $2 + 0;
+            push @cci_vals,  $3 + 0;
+        }
+
+        if (@cci_vals) {
+            my $avg_cci  = int(0.5 + _avg(@cci_vals));
+            my $avg_rssi = _avg(@rssi_vals);
+            $s->{cci}  = $avg_cci;
+            $s->{rssi} = $avg_rssi;   # use live reading, more accurate than scan
+            if ($avg_cci <= $cci_max) {
+                _log(sprintf("%.1f MHz: RSSI=%.1f CCI=%d → OK", $s->{freq_mhz}, $avg_rssi, $avg_cci));
+                push @qualified, $s;
+            } else {
+                _log(sprintf("%.1f MHz: RSSI=%.1f CCI=%d → SKIP", $s->{freq_mhz}, $avg_rssi, $avg_cci));
+            }
+        } else {
+            # No quality reading — keep it, we can't judge
+            _log(sprintf("%.1f MHz: no quality reading, keeping", $s->{freq_mhz}));
+            push @qualified, $s;
+        }
+    }
+    @stations = @qualified;
 }
 
 # ── Deep scan: tune each found station and wait for RDS PS name ───────────────
@@ -179,4 +218,8 @@ sub _wait_for {
 sub _rds_char {
     my ($c) = @_;
     return ($c >= 0x20 && $c < 0x7F) ? chr($c) : ' ';
+}
+
+sub _avg {
+    my $sum = 0; $sum += $_ for @_; return $sum / @_;
 }

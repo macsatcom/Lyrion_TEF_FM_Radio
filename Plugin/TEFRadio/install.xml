@@ -11,7 +11,7 @@
     <optionsURL>plugins/TEFRadio/settings/basic.html</optionsURL>
 
     <defaultState>enabled</defaultState>
-    <version>0.29</version>
+    <version>0.30</version>
 
     <targetApplication>
         <id>SqueezeCenter</id>
