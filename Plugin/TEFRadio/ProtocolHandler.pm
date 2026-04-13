@@ -15,6 +15,7 @@ package Plugins::TEFRadio::ProtocolHandler;
 # This module is responsible only for:
 #   - Protocol registration and capabilities
 #   - getMetadataFor() — reads live RDS data from /tmp/tefradio-rds-*.json
+#   - _pollRDS() timer — pushes RDS updates to LMS every 5 s
 #
 # URL frequency conventions:
 #   tefradio://90.8    FM 90.8 MHz  (decimal → MHz)
@@ -27,11 +28,16 @@ use warnings;
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use Slim::Utils::Timers;
+use Slim::Music::Info;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
+use Time::HiRes ();
 
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
+
+my $POLL_INTERVAL = 5; # seconds between RDS JSON checks
 
 # ─── Protocol capabilities ────────────────────────────────────────────────────
 
@@ -67,8 +73,19 @@ sub getMetadataFor {
     my $rt = ($rds && $rds->{rt}) ? $rds->{rt} : '';
     $rt =~ s/^\s+|\s+$//g;
 
-    my $title  = $preset_name // ($ps || "TEF Radio $freq_label");
-    my $artist = $rt || $freq_label;
+    my $title  = $rt  || $preset_name || $ps || "TEF Radio $freq_label";
+    my $artist = $ps  || $preset_name || $freq_label;
+
+    # Kick off the RDS polling timer for this client if not already running.
+    # killTimers + setTimer together act as a safe "set-if-not-set" because
+    # killTimers is a no-op when no timer exists.
+    Slim::Utils::Timers::killTimers($client, \&_pollRDS);
+    Slim::Utils::Timers::setTimer(
+        $client,
+        Time::HiRes::time() + $POLL_INTERVAL,
+        \&_pollRDS,
+        $url,
+    );
 
     return {
         title  => $title,
@@ -76,8 +93,57 @@ sub getMetadataFor {
         album  => 'TEF FM/AM Radio',
         cover  => undef,
         icon   => Slim::Player::ProtocolHandlers->iconForURL($url),
-        type   => (defined $freq_khz && $freq_khz >= 65000) ? 'FM Radio' : 'AM Radio',
+        type   => (defined $freq_khz && $freq_khz >= 10000) ? 'FM Radio' : 'AM Radio',
     };
+}
+
+# ─── RDS polling timer ────────────────────────────────────────────────────────
+
+sub _pollRDS {
+    my ($client, $url) = @_;
+
+    # Stop polling if the client moved on to something else.
+    my $current = Slim::Player::Playlist::url($client) // '';
+    unless ($current eq $url) {
+        $log->debug("TEFRadio: _pollRDS: client moved on, stopping timer");
+        return;
+    }
+
+    my ($freq_str) = $url =~ m{^tefradio://(.+)$};
+    my $freq_khz   = defined $freq_str ? _url_to_khz($freq_str) : undef;
+
+    if (defined $freq_khz) {
+        my $rds = _read_rds($freq_khz);
+        if ($rds) {
+            my $ps = $rds->{ps} // '';  $ps =~ s/^\s+|\s+$//g;
+            my $rt = $rds->{rt} // '';  $rt =~ s/^\s+|\s+$//g;
+
+            my $stations = $prefs->get('stations') || [];
+            my ($match)  = grep { _station_matches($_, $freq_khz) } @$stations;
+            my $preset   = $match ? $match->{name} : undef;
+
+            my $title  = $rt  || $preset || $ps || _khz_label($freq_khz);
+            my $artist = $ps  || $preset || _khz_label($freq_khz);
+
+            Slim::Music::Info::updateCacheEntry($url, {
+                TITLE  => $title,
+                ARTIST => $artist,
+            });
+
+            $client->currentPlaylistUpdateTime(Time::HiRes::time());
+            Slim::Control::Request::notifyFromArray($client, ['newmetadata']);
+
+            $log->debug("TEFRadio: RDS poll → title='$title' artist='$artist'");
+        }
+    }
+
+    # Reschedule.
+    Slim::Utils::Timers::setTimer(
+        $client,
+        Time::HiRes::time() + $POLL_INTERVAL,
+        \&_pollRDS,
+        $url,
+    );
 }
 
 # ─── Frequency helpers ────────────────────────────────────────────────────────

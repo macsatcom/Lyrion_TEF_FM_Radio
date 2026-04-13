@@ -4,14 +4,14 @@
 # Usage:
 #   perl tef-scan.pl <serial_port> [rssi_threshold_dbf]
 #
-# Scans 87.5–108 MHz in 100 kHz steps and prints a JSON array of found
-# stations to stdout. Stations below the RSSI threshold are excluded.
+# Scans 87.5–108 MHz in 100 kHz steps, measures CCI (co-channel interference),
+# and reads RDS PS name for each surviving station.  Stations below the RSSI
+# threshold or with CCI above the limit are excluded.
 #
 # Output format:
-#   [ { "freq_khz": 90800, "freq_mhz": 90.8, "rssi": 18.5, "name": "FM 90.8 MHz" }, ... ]
+#   [ { "freq_khz": 90800, "freq_mhz": 90.8, "rssi": 18.5, "cci": 12, "name": "DR P1" }, ... ]
 #
-# Stations are sorted by signal strength (strongest first).
-# Call with --deep to also resolve PS names from RDS (slower: ~5s per station).
+# Stations are sorted by frequency (ascending).
 
 use strict;
 use warnings;
@@ -32,9 +32,8 @@ sub _log {
 my $port      = shift // '/dev/ttyACM0';
 my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 10;  # dBf
 my $cci_max   = 35;   # drop stations with CCI above this
-my $deep      = grep { $_ eq '--deep' } @ARGV;
 
-_log("tef-scan starting: port=$port threshold=$threshold");
+_log("tef-scan starting: port=$port threshold=$threshold cci_max=$cci_max");
 
 # ── Kill any running RDS readers to free the serial port ─────────────────────
 for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
@@ -83,95 +82,97 @@ _log("waiting up to 60s for scan result (U line)");
 my $result_line = _wait_for($sel, qr/^U/, 60);
 _log(defined $result_line ? "got result: " . substr($result_line, 0, 80) : "scan timed out — no U line received");
 
-my @stations;
+my @candidates;
 
 if ($result_line && $result_line =~ /^U(.+)$/) {
     for my $entry (split /,/, $1) {
         next unless $entry =~ /^(\d+)=([-\d.]+)$/;
         my ($khz, $rssi) = (int($1), $2 + 0);
         next if $rssi < $threshold;
-        push @stations, {
+        push @candidates, {
             freq_khz => $khz,
             freq_mhz => $khz / 1000,
             rssi     => $rssi,
             name     => sprintf('FM %.1f MHz', $khz / 1000),
         };
     }
-    @stations = sort { $b->{rssi} <=> $a->{rssi} } @stations;
+    @candidates = sort { $b->{rssi} <=> $a->{rssi} } @candidates;
+    _log(sprintf("%d candidates above %s dBf threshold", scalar @candidates, $threshold));
 }
 
-# ── Quality check: tune each candidate, measure CCI, drop interference ────────
-if (@stations) {
-    _log(sprintf("quality-checking %d candidates (CCI max %d)", scalar @stations, $cci_max));
-    my @qualified;
-    for my $s (@stations) {
-        _send($tty, "T$s->{freq_khz}");
-        select(undef, undef, undef, 0.35);   # let tuner settle
+# ── Per-station check: CCI quality filter + RDS PS name ──────────────────────
+# Tune to each candidate, wait up to 5 s collecting:
+#   S-lines  → RSSI and CCI (co-channel interference)
+#   R-lines  → RDS group 0 → PS name (8 chars across 4 segments)
+# Stations with avg CCI > cci_max are dropped.
+# RDS PS name replaces the generic "FM x.x MHz" label when found.
 
-        # Collect up to 4 quality (S) lines
-        my (@cci_vals, @rssi_vals);
-        my $q_dead = time() + 1.2;
-        while (time() < $q_dead && @cci_vals < 4) {
-            my $line = _readline($sel, $q_dead - time());
-            next unless defined $line && $line =~ /^S(.)([-\d.]+),([-\d]+)/;
+my @stations;
+
+for my $s (@candidates) {
+    _log(sprintf("checking %.1f MHz (RSSI %.1f)", $s->{freq_mhz}, $s->{rssi}));
+    _send($tty, "T$s->{freq_khz}");
+    select(undef, undef, undef, 0.35);   # let tuner settle
+
+    my (@cci_vals, @rssi_vals);
+    my @ps_chars   = (' ') x 8;
+    my $ps_segs    = 0;             # bitmask of received segments 0-3
+    my $deadline   = time() + 5;   # 5 s window for CCI + RDS
+
+    while (time() < $deadline) {
+        # Early exit: have enough CCI samples AND complete PS
+        last if @cci_vals >= 4 && $ps_segs == 0xF;
+
+        my $line = _readline($sel, $deadline - time());
+        next unless defined $line;
+
+        if ($line =~ /^S(.)([-\d.]+),([-\d]+)/) {
             push @rssi_vals, $2 + 0;
             push @cci_vals,  $3 + 0;
         }
-
-        if (@cci_vals) {
-            my $avg_cci  = int(0.5 + _avg(@cci_vals));
-            my $avg_rssi = _avg(@rssi_vals);
-            $s->{cci}  = $avg_cci;
-            $s->{rssi} = $avg_rssi;   # use live reading, more accurate than scan
-            if ($avg_cci <= $cci_max) {
-                _log(sprintf("%.1f MHz: RSSI=%.1f CCI=%d → OK", $s->{freq_mhz}, $avg_rssi, $avg_cci));
-                push @qualified, $s;
-            } else {
-                _log(sprintf("%.1f MHz: RSSI=%.1f CCI=%d → SKIP", $s->{freq_mhz}, $avg_rssi, $avg_cci));
-            }
-        } else {
-            # No quality reading — keep it, we can't judge
-            _log(sprintf("%.1f MHz: no quality reading, keeping", $s->{freq_mhz}));
-            push @qualified, $s;
-        }
-    }
-    @stations = @qualified;
-}
-
-# ── Deep scan: tune each found station and wait for RDS PS name ───────────────
-if ($deep && @stations) {
-    for my $s (@stations) {
-        _send($tty, "T$s->{freq_khz}");
-        _wait_for($sel, qr/^T\d+/, 2);   # wait for tune confirmation
-
-        # Collect RDS lines for up to 8 seconds; stop as soon as PS is complete
-        my @ps   = (' ') x 8;
-        my $deadline = time() + 8;
-        while (time() < $deadline) {
-            my $line = _readline($sel, $deadline - time());
-            last unless defined $line;
-
-            if ($line =~ /^R([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})[0-9A-Fa-f]{2}$/) {
-                my ($B, undef, $D) = (hex($1), hex($2), hex($3));
-                my $group_type = ($B >> 12) & 0xF;
-                if ($group_type == 0) {
-                    my $seg = $B & 0x3;
-                    $ps[$seg * 2]     = _rds_char(($D >> 8) & 0xFF);
-                    $ps[$seg * 2 + 1] = _rds_char($D & 0xFF);
-                    if ($seg == 3) {
-                        # Got all 4 segments — PS name complete
-                        my $name = join('', @ps);
-                        $name =~ s/\s+$//;
-                        $s->{name} = $name if $name =~ /\S/;
-                        last;
-                    }
-                }
+        elsif ($line =~ /^R([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})[0-9A-Fa-f]{2}$/) {
+            my ($B, undef, $D) = (hex($1), hex($2), hex($3));
+            if ((($B >> 12) & 0xF) == 0) {   # group type 0 = PS
+                my $seg = $B & 0x3;
+                $ps_chars[$seg * 2]     = _rds_char(($D >> 8) & 0xFF);
+                $ps_chars[$seg * 2 + 1] = _rds_char($D & 0xFF);
+                $ps_segs |= (1 << $seg);
             }
         }
     }
+
+    # CCI filter
+    if (@cci_vals) {
+        my $avg_cci  = int(0.5 + _avg(@cci_vals));
+        my $avg_rssi = _avg(@rssi_vals);
+        $s->{cci}  = $avg_cci;
+        $s->{rssi} = $avg_rssi;
+        if ($avg_cci > $cci_max) {
+            _log(sprintf("  → SKIP (CCI=%d > %d)", $avg_cci, $cci_max));
+            next;
+        }
+        _log(sprintf("  → OK (RSSI=%.1f CCI=%d)", $avg_rssi, $avg_cci));
+    } else {
+        _log("  → no quality data, keeping");
+    }
+
+    # RDS PS name (use if we got at least 2 of 4 segments — partial is OK)
+    if ($ps_segs) {
+        my $ps_name = join('', @ps_chars);
+        $ps_name =~ s/\s+$//;
+        if ($ps_name =~ /\S/) {
+            _log(sprintf("  → RDS PS: '%s' (segs=0x%X)", $ps_name, $ps_segs));
+            $s->{name} = $ps_name;
+        }
+    }
+
+    push @stations, $s;
 }
 
-_log(sprintf("scan done: %d stations found above threshold %s dBf", scalar @stations, $threshold));
+# Sort by frequency ascending
+@stations = sort { $a->{freq_khz} <=> $b->{freq_khz} } @stations;
+
+_log(sprintf("scan done: %d stations", scalar @stations));
 close($tty);
 print JSON::PP->new->encode(\@stations), "\n";
 
