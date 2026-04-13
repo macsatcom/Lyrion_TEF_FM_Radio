@@ -490,7 +490,7 @@ def cmd_scan(args, tuner):
         cci_max = args.cci_max
         print(f"Checking signal quality (CCI ≤ {cci_max}) …\n")
         passed = []
-        for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
+        for freq_khz, rssi in sorted(stations, key=lambda x: x[0]):
             print(f"  {_freq_display(freq_khz):>9}  ", end='', flush=True)
             q = _check_quality(tuner, freq_khz)
             if q is None:
@@ -515,7 +515,7 @@ def cmd_scan(args, tuner):
         rds_wait = args.rds_time
         print(f"Resolving RDS names (up to {rds_wait:.0f} s per station) …\n")
         named = []
-        for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
+        for freq_khz, rssi in sorted(stations, key=lambda x: x[0]):
             print(f"  {_freq_display(freq_khz):>9}  …", end=' ', flush=True)
             ps = _collect_rds_ps(tuner, freq_khz, rds_wait)
             label = ps if ps else _freq_display(freq_khz)
@@ -540,7 +540,7 @@ def cmd_scan(args, tuner):
         threshold_str = f"{args.threshold} dBf"
         cci_str = f"  CCI ≤ {args.cci_max}" if args.quality_check else ""
         print(f"\nStations above {threshold_str}{cci_str}:")
-        for freq_khz, rssi, name in sorted(stations_named, key=lambda x: -x[1]):
+        for freq_khz, rssi, name in sorted(stations_named, key=lambda x: x[0]):
             q = quality_info.get(freq_khz)
             q_str = (f"  CCI={q['cci']:3d}  {'stereo' if q['stereo_signal'] else 'mono  '}"
                      if q else "")
