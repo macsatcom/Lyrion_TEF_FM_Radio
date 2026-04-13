@@ -42,10 +42,11 @@ my $pid_file = "$out_file.pid";
 _log("starting pid=$$ port=$port freq=${freq_khz}kHz");
 
 # Write PID file so the plugin can kill us
-open(my $pf, '>', $pid_file) and do { print $pf $$; close $pf };
+if (open my $pf, '>', $pid_file) { print $pf $$; close $pf }
 
-my $running   = 1;
-my $log_lines = 0;   # log first few raw lines to show what tuner outputs
+my $running        = 1;
+my $log_lines      = 0;   # log first few raw lines to show what tuner outputs
+my $log_first_json = 1;   # log once when we successfully write RDS data
 $SIG{TERM} = sub { $running = 0 };
 $SIG{INT}  = sub { $running = 0 };
 
@@ -183,6 +184,10 @@ while ($running) {
             $data{rt}      = $rt_str;
             $data{updated} = time();
             _write_json($out_file, \%data);
+            if ($log_first_json) {
+                _log("first JSON write: ps='$ps_str' rt='$rt_str'");
+                $log_first_json = 0;
+            }
         }
     }
 }
@@ -199,9 +204,5 @@ sub _write_json {
         print $fh JSON::PP->new->utf8->encode($data);
         close $fh;
         rename $tmp, $file;
-        state $logged = 0;
-        unless ($logged++) {
-            _log("first JSON write: ps='$data->{ps}' rt='$data->{rt}'");
-        }
     }
 }
