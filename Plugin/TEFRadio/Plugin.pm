@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.21';
+$VERSION = '0.22';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -164,7 +164,8 @@ sub _scanFeed {
         return $cb->({ items => [{ name => 'Error: tef-scan.pl not found', type => 'text' }] });
     }
 
-    # Kill any running RDS readers so the serial port is free for scanning
+    # Kill any running RDS readers so the serial port is free for scanning,
+    # then wait briefly for the killed process to release the port.
     for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
         if (open my $fh, '<', $pf) {
             my $pid = <$fh>; chomp $pid;
@@ -173,6 +174,7 @@ sub _scanFeed {
         }
         unlink $pf;
     }
+    select(undef, undef, undef, 0.5);   # 500 ms for serial port to be released
 
     $log->info("TEFRadio: starting FM band scan on $port");
 

@@ -24,11 +24,22 @@ my $port      = shift // '/dev/ttyACM0';
 my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 5;   # dBf
 my $deep      = grep { $_ eq '--deep' } @ARGV;
 
+# ── Kill any running RDS readers to free the serial port ─────────────────────
+for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
+    if (open my $fh, '<', $pf) {
+        my $pid = <$fh>; chomp $pid;
+        close $fh;
+        kill('TERM', $pid) if $pid =~ /^\d+$/;
+    }
+    unlink $pf;
+}
+select(undef, undef, undef, 0.4);   # 400 ms for port to be released
+
 # ── Open serial port ──────────────────────────────────────────────────────────
 system('stty', '-F', $port, qw(115200 cs8 -cstopb -parenb raw -echo));
 unless (sysopen(my $tty, $port, O_RDWR | O_NOCTTY)) {
     warn "tef-scan: cannot open $port: $!\n";
-    print "[]\\n";
+    print "[]\n";
     exit 1;
 }
 
