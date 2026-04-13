@@ -398,6 +398,33 @@ def _collect_rds_ps(tuner, freq_khz: int, wait_sec: float) -> str:
     return name
 
 
+def _check_quality(tuner, freq_khz, samples=5, settle=0.35, timeout=2.5):
+    """
+    Tune to freq_khz, let it settle, then average a few quality readings.
+    Returns a dict with rssi/cci/aci/stereo_signal, or None if no data arrived.
+    """
+    tuner.ser.reset_input_buffer()
+    tuner.send_simple(f"T{freq_khz}", 'T', timeout=2.0)
+    time.sleep(settle)
+
+    readings = []
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and len(readings) < samples:
+        q = tuner.read_quality_line(timeout=0.3)
+        if q:
+            readings.append(q)
+
+    if not readings:
+        return None
+
+    return {
+        "rssi":          round(sum(r["rssi"] for r in readings) / len(readings), 2),
+        "cci":           int(round(sum(r["cci"]  for r in readings) / len(readings))),
+        "aci":           int(round(sum(r["aci"]  for r in readings) / len(readings))),
+        "stereo_signal": sum(1 for r in readings if r["stereo_signal"]) > len(readings) // 2,
+    }
+
+
 def cmd_scan(args, tuner):
     from_khz = int(parse_freq(str(args.freq_from)) / 10) * 10   # round to 10 kHz
     to_khz   = int(parse_freq(str(args.freq_to))   / 10) * 10
@@ -447,19 +474,45 @@ def cmd_scan(args, tuner):
     except KeyboardInterrupt:
         tuner._send("")   # cancel scan
 
-    # ── RDS name resolution ───────────────────────────────────────────────────
-    # Filter to stations above threshold first, then tune each and wait for PS.
+    # ── Filter by RSSI threshold ──────────────────────────────────────────────
     stations = [(f, r) for f, r in results if r >= args.threshold]
 
-    if args.rds and stations:
-        rds_wait = args.rds_time
+    # Cancel any residual scan output and flush before we start tuning
+    tuner._send("")
+    time.sleep(0.1)
+    tuner.ser.reset_input_buffer()
 
-        # Send an explicit scan-cancel and flush before starting tune sequence.
-        # The scanner may still have buffered output even after the U-line.
-        tuner._send("")
-        time.sleep(0.1)
+    # quality_info[freq_khz] = {"cci": int, "aci": int, "stereo": bool} if checked
+    quality_info = {}
+
+    # ── Quality check: tune each candidate, measure CCI/ACI ──────────────────
+    if args.quality_check and stations:
+        cci_max = args.cci_max
+        print(f"Checking signal quality (CCI ≤ {cci_max}) …\n")
+        passed = []
+        for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
+            print(f"  {_freq_display(freq_khz):>9}  ", end='', flush=True)
+            q = _check_quality(tuner, freq_khz)
+            if q is None:
+                print("no reading — skipped")
+                continue
+            stereo = "stereo" if q["stereo_signal"] else "mono"
+            ok = q["cci"] <= cci_max
+            verdict = "OK" if ok else f"SKIP"
+            print(f"RSSI={q['rssi']:6.2f} dBf  CCI={q['cci']:3d}  ACI={q['aci']:3d}  "
+                  f"{stereo}  → {verdict}")
+            if ok:
+                passed.append((freq_khz, rssi))
+                quality_info[freq_khz] = q
+        print()
+        stations = passed
+
+        # Flush again after all the tuning
         tuner.ser.reset_input_buffer()
 
+    # ── RDS name resolution ───────────────────────────────────────────────────
+    if args.rds and stations:
+        rds_wait = args.rds_time
         print(f"Resolving RDS names (up to {rds_wait:.0f} s per station) …\n")
         named = []
         for freq_khz, rssi in sorted(stations, key=lambda x: -x[1]):
@@ -474,15 +527,24 @@ def cmd_scan(args, tuner):
 
     # ── Output ────────────────────────────────────────────────────────────────
     if args.json:
-        out = [
-            {"freq_mhz": round(f / 1000, 3), "rssi": r, "name": n}
-            for f, r, n in stations_named
-        ]
+        out = []
+        for f, r, n in stations_named:
+            entry = {"freq_mhz": round(f / 1000, 3), "rssi": r, "name": n}
+            if f in quality_info:
+                entry["cci"] = quality_info[f]["cci"]
+                entry["aci"] = quality_info[f]["aci"]
+                entry["stereo"] = quality_info[f]["stereo_signal"]
+            out.append(entry)
         print(_json_mod.dumps(out, indent=2))
     elif stations_named:
-        print(f"\nStations above {args.threshold} dBf:")
+        threshold_str = f"{args.threshold} dBf"
+        cci_str = f"  CCI ≤ {args.cci_max}" if args.quality_check else ""
+        print(f"\nStations above {threshold_str}{cci_str}:")
         for freq_khz, rssi, name in sorted(stations_named, key=lambda x: -x[1]):
-            print(f"  {_freq_display(freq_khz):>9}  {rssi:6.2f} dBf  {name}")
+            q = quality_info.get(freq_khz)
+            q_str = (f"  CCI={q['cci']:3d}  {'stereo' if q['stereo_signal'] else 'mono  '}"
+                     if q else "")
+            print(f"  {_freq_display(freq_khz):>9}  {rssi:6.2f} dBf{q_str}  {name}")
 
 
 def cmd_monitor(args, tuner):
@@ -606,7 +668,9 @@ examples:
   %(prog)s quality --interval 500
   %(prog)s scan
   %(prog)s scan --from 87.5 --to 108 --step 0.1 --threshold 10
-  %(prog)s scan --threshold 5 --rds
+  %(prog)s scan --threshold 5 --quality-check
+  %(prog)s scan --threshold 5 --quality-check --cci-max 20
+  %(prog)s scan --threshold 5 --quality-check --rds
   %(prog)s scan --threshold 5 --rds --rds-time 12
   %(prog)s scan --repeat
   %(prog)s monitor
@@ -715,6 +779,12 @@ examples:
                    help="Repeat scan continuously (Ctrl+C to stop)")
     p.add_argument("--timeout", type=float, default=120.0, metavar="sec",
                    help="Scan timeout in seconds (default: 120)")
+    p.add_argument("--quality-check", action="store_true",
+                   help="After scan, tune each candidate and measure CCI/ACI — "
+                        "filters out stations with co-channel interference")
+    p.add_argument("--cci-max", type=int, default=30, metavar="0-100",
+                   help="Max acceptable CCI when using --quality-check (default: 30). "
+                        "Lower = stricter. Stations above this are dropped.")
     p.add_argument("--rds", action="store_true",
                    help="After scan, tune each found station and resolve its RDS PS name")
     p.add_argument("--rds-time", type=float, default=8.0, metavar="sec",
