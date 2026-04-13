@@ -116,7 +116,7 @@ sub _spawn_rds {
         POSIX::setsid();
         open(STDIN,  '<', '/dev/null');
         open(STDOUT, '>', '/dev/null');
-        open(STDERR, '>', '/dev/null');
+        open(STDERR, '>>', '/tmp/tefradio-rds.log');  # log instead of discard
         exec($^X, $script, $port, $freq_khz, $json_file);
         POSIX::_exit(1);
     }

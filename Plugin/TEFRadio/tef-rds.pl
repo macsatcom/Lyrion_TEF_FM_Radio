@@ -28,6 +28,9 @@ use IO::Select;
 use POSIX   ();
 use JSON::PP;
 
+# Log to stderr (which _spawn_rds redirects to /tmp/tefradio-rds.log)
+sub _log { warn scalar(localtime) . ": tef-rds: @_\n" }
+
 unless (@ARGV == 3) {
     print STDERR "Usage: tef-rds.pl <serial_port> <freq_khz> <output_json>\n";
     exit 1;
@@ -36,10 +39,13 @@ unless (@ARGV == 3) {
 my ($port, $freq_khz, $out_file) = @ARGV;
 my $pid_file = "$out_file.pid";
 
+_log("starting pid=$$ port=$port freq=${freq_khz}kHz");
+
 # Write PID file so the plugin can kill us
 open(my $pf, '>', $pid_file) and do { print $pf $$; close $pf };
 
-my $running = 1;
+my $running   = 1;
+my $log_lines = 0;   # log first few raw lines to show what tuner outputs
 $SIG{TERM} = sub { $running = 0 };
 $SIG{INT}  = sub { $running = 0 };
 
@@ -47,13 +53,15 @@ $SIG{INT}  = sub { $running = 0 };
 select(undef, undef, undef, 0.7);
 
 # Configure and open serial port (read-only — we never send commands)
+_log("opening $port read-only");
 system('stty', '-F', $port, qw(115200 cs8 -cstopb -parenb raw -echo));
 my $tty;
 unless (sysopen($tty, $port, O_RDONLY | O_NOCTTY)) {
-    warn "tef-rds: cannot open $port: $!\n";
+    _log("FAILED to open $port: $!");
     unlink $pid_file;
     exit 1;
 }
+_log("port open OK, reading RDS data");
 
 my $sel = IO::Select->new($tty);
 my $buf = '';
@@ -91,6 +99,12 @@ while ($running) {
         my $line = $1;
         $line =~ s/\r//g;
         next unless length $line;
+
+        # Log the first 5 lines so we can see what the tuner is outputting
+        if ($log_lines < 5) {
+            _log("tuner line: $line");
+            $log_lines++;
+        }
 
         # PI code: P<4hex>[?*]
         if ($line =~ /^P([0-9A-Fa-f]{4})\??/) {
@@ -185,5 +199,9 @@ sub _write_json {
         print $fh JSON::PP->new->utf8->encode($data);
         close $fh;
         rename $tmp, $file;
+        state $logged = 0;
+        unless ($logged++) {
+            _log("first JSON write: ps='$data->{ps}' rt='$data->{rt}'");
+        }
     }
 }
