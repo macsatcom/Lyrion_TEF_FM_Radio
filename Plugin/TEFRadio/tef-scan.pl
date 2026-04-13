@@ -49,7 +49,8 @@ select(undef, undef, undef, 0.4);   # 400 ms for port to be released
 # ── Open serial port ──────────────────────────────────────────────────────────
 _log("opening port $port");
 system('stty', '-F', $port, qw(115200 cs8 -cstopb -parenb raw -echo));
-unless (sysopen(my $tty, $port, O_RDWR | O_NOCTTY)) {
+my $tty;
+unless (sysopen($tty, $port, O_RDWR | O_NOCTTY)) {
     _log("FAILED to open $port: $!");
     print "[]\n";
     exit 1;
