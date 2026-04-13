@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.22';
+$VERSION = '0.23';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -164,27 +164,50 @@ sub _scanFeed {
         return $cb->({ items => [{ name => 'Error: tef-scan.pl not found', type => 'text' }] });
     }
 
-    # Kill any running RDS readers so the serial port is free for scanning,
-    # then wait briefly for the killed process to release the port.
+    # Kill any running RDS readers so the serial port is free for scanning.
+    # Try pidfiles first, then fall back to pgrep for processes we missed.
     for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
         if (open my $fh, '<', $pf) {
             my $pid = <$fh>; chomp $pid;
             CORE::close($fh);
-            kill('TERM', $pid) if $pid =~ /^\d+$/;
+            if ($pid =~ /^\d+$/) {
+                $log->info("TEFRadio: killing RDS reader pid $pid");
+                kill('TERM', $pid);
+            }
         }
         unlink $pf;
     }
-    select(undef, undef, undef, 0.5);   # 500 ms for serial port to be released
+    # Belt-and-suspenders: also kill by process name in case pidfile was missing
+    if (open my $pg, '-|', 'pgrep', '-f', 'tef-rds.pl') {
+        while (my $pid = <$pg>) {
+            chomp $pid;
+            if ($pid =~ /^\d+$/) {
+                $log->info("TEFRadio: killing stray RDS reader pid $pid");
+                kill('TERM', $pid);
+            }
+        }
+        CORE::close($pg);
+    }
+    select(undef, undef, undef, 0.7);   # 700 ms for serial port to be released
 
     $log->info("TEFRadio: starting FM band scan on $port");
 
-    # Run scan synchronously — takes ~10–15 s for the full FM band
+    # Run scan, capturing stderr into the LMS log for diagnostics
+    my $err_file = "/tmp/tefradio-scan-err.txt";
     my $json = '';
-    if (open my $fh, '-|', $^X, $script, $port) {
+    if (open my $fh, '-|', '/bin/sh', '-c',
+            "$^X \Q$script\E \Q$port\E 2>\Q$err_file\E") {
         local $/;
         $json = <$fh>;
-        close $fh;
+        CORE::close($fh);
     }
+    if (-s $err_file) {
+        if (open my $ef, '<', $err_file) {
+            local $/; my $err = <$ef>; CORE::close($ef);
+            $log->warn("TEFRadio: tef-scan.pl stderr: $err");
+        }
+    }
+    unlink $err_file;
 
     my $results = eval { JSON::PP->new->decode($json) } // [];
 
