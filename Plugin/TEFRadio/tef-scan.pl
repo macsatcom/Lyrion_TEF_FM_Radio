@@ -20,9 +20,20 @@ use IO::Select;
 use POSIX   ();
 use JSON::PP;
 
+my $LOGFILE = '/tmp/tefradio-scan.log';
+sub _log {
+    if (open my $f, '>>', $LOGFILE) {
+        print $f scalar(localtime) . ": @_\n";
+        close $f;
+    }
+    warn "@_\n";   # also goes to LMS log via stderr
+}
+
 my $port      = shift // '/dev/ttyACM0';
 my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 5;   # dBf
 my $deep      = grep { $_ eq '--deep' } @ARGV;
+
+_log("tef-scan starting: port=$port threshold=$threshold");
 
 # ── Kill any running RDS readers to free the serial port ─────────────────────
 for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
@@ -36,32 +47,39 @@ for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
 select(undef, undef, undef, 0.4);   # 400 ms for port to be released
 
 # ── Open serial port ──────────────────────────────────────────────────────────
+_log("opening port $port");
 system('stty', '-F', $port, qw(115200 cs8 -cstopb -parenb raw -echo));
 unless (sysopen(my $tty, $port, O_RDWR | O_NOCTTY)) {
-    warn "tef-scan: cannot open $port: $!\n";
+    _log("FAILED to open $port: $!");
     print "[]\n";
     exit 1;
 }
+_log("port opened OK");
 
 my $sel = IO::Select->new($tty);
 
 # ── Startup handshake ─────────────────────────────────────────────────────────
+_log("sending init 'x', waiting for OK");
 _send($tty, 'x');
 unless (_wait_for($sel, qr/^OK$/, 4)) {
-    warn "tef-scan: no OK from tuner\n";
+    _log("no OK from tuner within 4s");
     print "[]\n";
     close $tty;
     exit 1;
 }
+_log("got OK from tuner");
 
 # ── FM band scan: 87.5–108 MHz, 100 kHz steps ────────────────────────────────
+_log("sending scan commands Sa/Sb/Sc/S");
 _send($tty, 'Sa87500');
 _send($tty, 'Sb108000');
 _send($tty, 'Sc100');
 _send($tty, 'S');
 
 # Scan takes ~5–15 seconds depending on firmware; wait up to 60 s
+_log("waiting up to 60s for scan result (U line)");
 my $result_line = _wait_for($sel, qr/^U/, 60);
+_log(defined $result_line ? "got result: " . substr($result_line, 0, 80) : "scan timed out — no U line received");
 
 my @stations;
 
@@ -113,6 +131,7 @@ if ($deep && @stations) {
     }
 }
 
+_log(sprintf("scan done: %d stations found above threshold %s dBf", scalar @stations, $threshold));
 close($tty);
 print JSON::PP->new->encode(\@stations), "\n";
 

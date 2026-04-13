@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.23';
+$VERSION = '0.24';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -31,6 +31,8 @@ use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
 use Slim::Player::TranscodingHelper;
+use IPC::Open3;
+use Symbol 'gensym';
 
 use Plugins::TEFRadio::Settings;
 
@@ -192,22 +194,22 @@ sub _scanFeed {
 
     $log->info("TEFRadio: starting FM band scan on $port");
 
-    # Run scan, capturing stderr into the LMS log for diagnostics
-    my $err_file = "/tmp/tefradio-scan-err.txt";
+    # Run scan with IPC::Open3 so we capture stderr into the LMS log
+    my ($scan_in, $scan_out, $scan_err);
+    $scan_err = gensym;
+    my $scan_pid = eval {
+        open3($scan_in, $scan_out, $scan_err, $^X, $script, $port)
+    };
     my $json = '';
-    if (open my $fh, '-|', '/bin/sh', '-c',
-            "$^X \Q$script\E \Q$port\E 2>\Q$err_file\E") {
-        local $/;
-        $json = <$fh>;
-        CORE::close($fh);
+    if ($scan_pid) {
+        CORE::close($scan_in);
+        { local $/; $json = <$scan_out> // ''; }
+        my $err = do { local $/; <$scan_err> // '' };
+        waitpid($scan_pid, 0);
+        $log->warn("TEFRadio: tef-scan.pl stderr: $err") if $err =~ /\S/;
+    } else {
+        $log->error("TEFRadio: failed to start tef-scan.pl: $@");
     }
-    if (-s $err_file) {
-        if (open my $ef, '<', $err_file) {
-            local $/; my $err = <$ef>; CORE::close($ef);
-            $log->warn("TEFRadio: tef-scan.pl stderr: $err");
-        }
-    }
-    unlink $err_file;
 
     my $results = eval { JSON::PP->new->decode($json) } // [];
 
