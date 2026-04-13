@@ -44,6 +44,14 @@ PLUGIN_TEFRADIO_SETTINGS_STATIONS_DESC
 	DA	Én station pr. linje: Navn|Frekvens. FM: MHz (f.eks. DR P1|90.8). AM: kHz (f.eks. BBC R4|198 eller BBC WS|648).
 	EN	One station per line: Name|Frequency. FM: MHz (e.g. DR P1|90.8). AM: kHz (e.g. BBC R4|198 or BBC WS|648).
 
+PLUGIN_TEFRADIO_SETTINGS_SCAN
+	DA	FM-båndscanning
+	EN	FM Band Scan
+
+PLUGIN_TEFRADIO_SETTINGS_SCAN_DESC
+	DA	Scan FM-båndet og opdater stationslisten automatisk. Tager 20–40 sekunder.
+	EN	Scan the FM band and automatically update the station list. Takes 20–40 seconds.
+
 PLUGIN_TEFRADIO_TUNE_ERROR
 	DA	Kunne ikke starte TEF-radiostream — tjek seriel port og lydenhed i indstillinger
 	EN	Could not start TEF radio stream — check serial port and audio device in settings

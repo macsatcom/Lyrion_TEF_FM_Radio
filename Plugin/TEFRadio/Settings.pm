@@ -10,6 +10,8 @@ use base qw(Slim::Web::Settings);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
+use File::Spec::Functions qw(catfile);
+use JSON::PP;
 
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
@@ -59,6 +61,35 @@ sub handler {
         $log->info('TEFRadio settings: saved ' . scalar(@stations) . ' station presets');
     }
 
+    # ── FM band scan (triggered by the Scan button) ───────────────────────────
+    if ($params->{runScan}) {
+        my $script = catfile(_plugin_dir(), 'tef-scan.pl');
+        my $port   = $prefs->get('serial_port') // '/dev/ttyACM0';
+
+        $log->info("TEFRadio settings: starting FM band scan on $port");
+
+        my $json = '';
+        if (open my $fh, '-|', $^X, $script, $port) {
+            local $/; $json = <$fh>; CORE::close($fh);
+        } else {
+            $log->error("TEFRadio settings: failed to start tef-scan.pl: $!");
+        }
+
+        my $results = eval { JSON::PP->new->decode($json) } // [];
+
+        if (@$results) {
+            my @stations = map {
+                { name => $_->{name}, freq => $_->{freq_mhz} }
+            } @$results;
+            $prefs->set('stations', \@stations);
+            $log->info(sprintf('TEFRadio settings: scan saved %d stations', scalar @stations));
+            $params->{scan_message} = sprintf('Scan complete — found %d stations. Station list updated.', scalar @stations);
+        } else {
+            $params->{scan_message} = 'Scan complete — no stations found above threshold.';
+            $log->warn('TEFRadio settings: scan returned no stations');
+        }
+    }
+
     # Always regenerate the textarea from the saved station array
     my $stations = $prefs->get('stations') || [];
     $params->{stations_text} = join "\n", map { "$_->{name}|$_->{freq}" } @$stations;
@@ -75,6 +106,14 @@ sub handler {
     }
 
     return $class->SUPER::handler($client, $params);
+}
+
+sub _plugin_dir {
+    if (my $path = $INC{'Plugins/TEFRadio/Settings.pm'}) {
+        $path =~ s{/Settings\.pm$}{};
+        return $path;
+    }
+    return '.';
 }
 
 1;

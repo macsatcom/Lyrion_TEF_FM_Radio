@@ -22,14 +22,13 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.30';
+$VERSION = '0.31';
 
 use base qw(Slim::Plugin::OPMLBased);
 
 use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
-use JSON::PP;
 use Slim::Player::TranscodingHelper;
 
 use Plugins::TEFRadio::Settings;
@@ -141,115 +140,9 @@ sub handleFeed {
     my $stations = $prefs->get('stations') || \@DEFAULT_STATIONS;
 
     my @items = map { _station_to_opml($_) } @$stations;
-
-    # Scan actions at the bottom
-    push @items, {
-        name  => 'Scan FM Band',
-        type  => 'link',
-        url   => \&_scanFeed,
-    };
-
     $cb->({ items => \@items });
 }
 
-# ─── FM band scan feed ────────────────────────────────────────────────────────
-
-sub _scanFeed {
-    my ($client, $cb, $args) = @_;
-
-    my $port   = $prefs->get('serial_port') // '/dev/ttyACM0';
-    my $script = catfile(_plugin_dir(), 'tef-scan.pl');
-
-    unless (-f $script) {
-        return $cb->({ items => [{ name => 'Error: tef-scan.pl not found', type => 'text' }] });
-    }
-
-    # Kill any running RDS readers so the serial port is free for scanning.
-    # Try pidfiles first, then fall back to pgrep for processes we missed.
-    for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
-        if (open my $fh, '<', $pf) {
-            my $pid = <$fh>; chomp $pid;
-            CORE::close($fh);
-            if ($pid =~ /^\d+$/) {
-                $log->info("TEFRadio: killing RDS reader pid $pid");
-                kill('TERM', $pid);
-            }
-        }
-        unlink $pf;
-    }
-    # Belt-and-suspenders: also kill by process name in case pidfile was missing
-    if (open my $pg, '-|', 'pgrep', '-f', 'tef-rds.pl') {
-        while (my $pid = <$pg>) {
-            chomp $pid;
-            if ($pid =~ /^\d+$/) {
-                $log->info("TEFRadio: killing stray RDS reader pid $pid");
-                kill('TERM', $pid);
-            }
-        }
-        CORE::close($pg);
-    }
-    select(undef, undef, undef, 0.7);   # 700 ms for serial port to be released
-
-    $log->info("TEFRadio: starting FM band scan on $port");
-
-    # Run scan synchronously — tef-scan.pl logs to /tmp/tefradio-scan.log
-    my $json = '';
-    $log->info("TEFRadio: launching $^X $script $port");
-    if (open my $fh, '-|', $^X, $script, $port) {
-        $log->info("TEFRadio: tef-scan.pl started, waiting for result");
-        local $/;
-        $json = <$fh>;
-        CORE::close($fh);
-        $log->info("TEFRadio: tef-scan.pl finished, got " . length($json) . " bytes");
-    } else {
-        $log->error("TEFRadio: failed to open pipe to tef-scan.pl: $!");
-    }
-
-    my $results = eval { JSON::PP->new->decode($json) } // [];
-
-    unless (@$results) {
-        return $cb->({ items => [
-            { name => 'No FM stations found above threshold', type => 'text' },
-        ]});
-    }
-
-    # Build result items — each is directly playable
-    my @items = map {
-        my $s = $_;
-        {
-            name  => $s->{name},
-            type  => 'audio',
-            url   => sprintf('tefradio://%.1f', $s->{freq_mhz}),
-            line2 => sprintf('%.1f MHz  —  %.0f dBf', $s->{freq_mhz}, $s->{rssi}),
-        }
-    } @$results;
-
-    # Prepend a "save all" action
-    unshift @items, {
-        name => sprintf('Save %d stations as presets', scalar @$results),
-        type => 'link',
-        url  => sub {
-            my ($client, $cb, $args) = @_;
-            _save_scan_results($results);
-            $cb->({ items => [{
-                name => sprintf('Saved %d stations — restart plugin to see them', scalar @$results),
-                type => 'text',
-            }]});
-        },
-    };
-
-    $cb->({ items => \@items });
-}
-
-sub _save_scan_results {
-    my ($results) = @_;
-    my @stations = map {
-        { name => $_->{name}, freq => $_->{freq_mhz} }
-    } @$results;
-    $prefs->set('stations',      \@stations);
-    $prefs->set('stations_text', _stations_to_text(\@stations));
-    $log->info(sprintf('TEFRadio: saved %d scanned stations as presets', scalar @stations));
-}
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 

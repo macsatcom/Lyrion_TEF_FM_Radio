@@ -52,4 +52,14 @@ sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger</code>
     <textarea class="stdedit" name="stations_text" rows="14" cols="50" style="font-family: monospace;">[% prefs.stations_text %]</textarea>
 [% END %]
 
+[% WRAPPER setting title="PLUGIN_TEFRADIO_SETTINGS_SCAN" desc="PLUGIN_TEFRADIO_SETTINGS_SCAN_DESC" %]
+    [% IF scan_message %]
+    <div style="background:#d4edda;border:1px solid #c3e6cb;border-radius:4px;padding:10px 14px;margin:0 0 12px 0;color:#155724;">
+        [% scan_message %]
+    </div>
+    [% END %]
+    <input type="submit" name="runScan" value="Scan FM Band now" class="btn" />
+    <span style="margin-left:10px;color:#666;font-size:0.9em;">Takes 20–40 seconds. Replaces the station list above.</span>
+[% END %]
+
 [% PROCESS settings/footer.html %]
