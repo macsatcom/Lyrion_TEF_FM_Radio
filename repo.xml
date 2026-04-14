@@ -4,12 +4,12 @@
         <title lang="EN">TEF FM/AM Radio for Lyrion</title>
     </details>
     <plugins>
-        <plugin name="TEFRadio" version="0.37" minTarget="8.0" maxTarget="*">
+        <plugin name="TEFRadio" version="0.38" minTarget="8.0" maxTarget="*">
             <title lang="EN">TEF FM/AM Radio</title>
             <desc lang="EN">FM and AM radio via TEF668X USB tuner — RDS metadata, FM scan, direct pipe into LMS</desc>
-            <url>https://github.com/macsatcom/Lyrion_TEF_FM_Radio/releases/download/plugin-v0.37/TEFRadio-0.37.zip</url>
+            <url>https://github.com/macsatcom/Lyrion_TEF_FM_Radio/releases/download/plugin-v0.38/TEFRadio-0.38.zip</url>
             <link>https://github.com/macsatcom/Lyrion_TEF_FM_Radio</link>
-            <sha>9c6d821aad2168b1de4d3c597a3f9962cb2521e5</sha>
+            <sha>316b51e622b9a06f0c4fc3060f133b91e572265b</sha>
             <creator>Kasper S Nielsen</creator>
             <creatorEmail>kasper@smsweb.dk</creatorEmail>
         </plugin>

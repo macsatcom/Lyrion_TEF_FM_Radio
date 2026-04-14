@@ -202,7 +202,7 @@ sub _read_rds {
     my $json = <$fh>;
     CORE::close($fh);
 
-    my $data = eval { JSON::PP->new->decode($json) };
+    my $data = eval { JSON::PP->new->utf8->decode($json) };
     return undef unless $data;
 
     # Use the explicit 'updated' timestamp written by tef-rds.pl; fall back to

@@ -4,23 +4,30 @@
 # Usage (called by LMS transcoder via custom-convert.conf):
 #   perl tef-stream.pl <url_or_freq> <serial_port> <alsa_device> [bitrate_k]
 #
-#   <url_or_freq> : either a tefradio:// URL (e.g. tefradio://90.8)
-#                   or a raw frequency in kHz (e.g. 90800) for compatibility
+# What it does — every time it is called:
+#   1. Kills all running RDS readers (frees the serial port).
+#   2. Tunes the TEF chip to the requested frequency via serial.
+#   3. Spawns tef-rds.pl for the new frequency.
+#   4. If no hub is running: spawns tef-hub.pl (which starts ffmpeg and owns
+#      the ALSA device).
+#   5. Connects to the hub's Unix socket and relays the MP3 stream to stdout.
 #
-# What it does:
-#   1. Kills any existing RDS reader (frees the serial port).
-#   2. Opens the TEF tuner's serial port and tunes to the given frequency.
-#   3. Spawns tef-rds.pl as a double-forked background daemon.
-#   4. Replaces itself (exec) with ffmpeg, which reads audio from the
-#      USB ALSA capture device and encodes it as MP3 on stdout.
+# Multiple players:
+#   The hub is a single shared process — not tied to any particular frequency.
+#   ffmpeg just reads whatever audio the tuner chip is currently outputting.
+#   When a new player tunes to a different frequency (step 2), the hardware
+#   switches and ALL connected players immediately hear the new frequency.
+#   "Last player to tune wins" — but any number of players can listen
+#   simultaneously without competing for the ALSA device.
 #
 # LMS reads the MP3 stream from this process's stdout via the transcoder pipe.
 
 use strict;
 use warnings;
-use POSIX ();
-use Fcntl   qw(O_RDWR O_NOCTTY);
+use POSIX          qw(_exit setsid);
+use Fcntl          qw(O_RDWR O_NOCTTY);
 use IO::Select;
+use IO::Socket::UNIX;
 
 unless (@ARGV >= 3) {
     print STDERR
@@ -43,82 +50,144 @@ if (defined $url_or_freq && $url_or_freq =~ m{^tefradio://(.+)$}) {
     $freq_khz = int($url_or_freq // 0);
 }
 
-# Locate this script's directory to find tef-rds.pl alongside it
+# Locate helper scripts alongside this one
 (my $script_dir = __FILE__) =~ s{[^/]+$}{};
 $script_dir =~ s{/$}{} if $script_dir ne '/';
 my $rds_script = "$script_dir/tef-rds.pl";
+my $hub_script = "$script_dir/tef-hub.pl";
 
-# Locate ffmpeg: prefer bundled static binary next to this script
+# Prefer bundled static ffmpeg binary
 my $ffmpeg = do {
     my $bundled = "$script_dir/ffmpeg";
     (-x $bundled) ? $bundled : 'ffmpeg';
 };
 
-# ── 1. Kill all running RDS readers (any frequency) ──────────────────────
-# The previous station's RDS reader holds the serial port; kill it so we
-# can tune without interference.
+# Single shared hub socket — not frequency-specific, because ffmpeg just reads
+# whatever audio the tuner chip outputs; retuning the chip is enough.
+my $hub_sock    = '/tmp/tefradio-hub.sock';
+my $hub_pidfile = "$hub_sock.pid";
 my $rds_pidfile = "/tmp/tefradio-rds-${freq_khz}.json.pid";
+my $rds_json    = "/tmp/tefradio-rds-${freq_khz}.json";
+
+# ── 1. Kill all running RDS readers (free the serial port) ────────────────
 for my $pf (glob('/tmp/tefradio-rds-*.json.pid')) {
-    _kill_rds($pf);
+    _kill_pidfile($pf);
 }
 
 # ── 2. Tune hardware ──────────────────────────────────────────────────────
 _tune($port, $freq_khz);
 
-# Hardware needs a short moment to switch frequency cleanly
+# Hardware needs a moment to switch frequency cleanly
 select(undef, undef, undef, 0.35);
 
-# ── 3. Spawn RDS reader in background ────────────────────────────────────
+# ── 3. Spawn RDS reader for the new frequency ─────────────────────────────
 if (-f $rds_script) {
-    my $json_file = "/tmp/tefradio-rds-${freq_khz}.json";
-    _spawn_rds($rds_script, $port, $freq_khz, $json_file, $rds_pidfile);
+    _spawn_rds($rds_script, $port, $freq_khz, $rds_json, $rds_pidfile);
 }
 
-# ── 4. Stream audio → stdout ──────────────────────────────────────────────
-# exec() replaces this Perl process with ffmpeg, inheriting stdout.
-# LMS is holding the read end of the transcoder pipe connected to our stdout.
-exec(
-    $ffmpeg,
-    '-loglevel', 'error',
-    '-f',        'alsa',
-    '-i',        $alsa_dev,
-    '-c:a',      'libmp3lame',
-    '-b:a',      $bitrate,
-    '-f',        'mp3',
-    'pipe:1',
-) or die "tef-stream: cannot exec ffmpeg ($ffmpeg): $!\n";
+# ── 4. Ensure hub is running ───────────────────────────────────────────────
+# If a hub is already running (another player is listening), we simply
+# connect to it — no need to touch ffmpeg, which is already streaming.
+# If not running, start it now.
+my $hub_client = _try_connect($hub_sock);
+
+unless ($hub_client) {
+    _kill_pidfile($hub_pidfile) if -f $hub_pidfile;   # clean up stale PID
+
+    _spawn_hub($hub_script, $alsa_dev, $bitrate, $hub_sock, $ffmpeg);
+
+    # Wait up to 5 s for the hub to create its socket and start listening
+    my $deadline = time() + 5;
+    until ($hub_client || time() > $deadline) {
+        $hub_client = _try_connect($hub_sock);
+        select(undef, undef, undef, 0.05) unless $hub_client;
+    }
+
+    die "tef-stream: hub failed to start (ALSA device unavailable?)\n"
+        unless $hub_client;
+}
+
+# ── 5. Relay hub's MP3 stream → stdout (which LMS reads) ──────────────────
+_relay($hub_client);
 
 
 # ── Subroutines ───────────────────────────────────────────────────────────
 
-sub _kill_rds {
+# Try to connect to the hub socket.
+# Returns IO::Socket::UNIX on success, undef if socket absent or refused.
+sub _try_connect {
+    my ($sock_path) = @_;
+    return undef unless -S $sock_path;
+    return IO::Socket::UNIX->new(Type => SOCK_STREAM, Peer => $sock_path);
+}
+
+# Copy data from $sock → STDOUT until either end closes.
+sub _relay {
+    my ($sock) = @_;
+    while (1) {
+        my $n = sysread($sock, my $buf, 65536);
+        last unless defined $n && $n > 0;   # hub closed or EOF
+        my $off = 0;
+        while ($off < length($buf)) {
+            my $w = syswrite(STDOUT, $buf, length($buf) - $off, $off);
+            last unless defined $w;          # LMS closed the pipe
+            $off += $w;
+        }
+    }
+    close $sock;
+}
+
+# Kill a process whose PID is stored in $pidfile, then remove the file.
+sub _kill_pidfile {
     my ($pidfile) = @_;
     return unless -f $pidfile;
     if (open my $fh, '<', $pidfile) {
-        my $pid = <$fh>; chomp $pid;
-        close $fh;
+        my $pid = <$fh>; chomp $pid; close $fh;
         kill('TERM', $pid) if $pid =~ /^\d+$/;
     }
     unlink $pidfile;
 }
 
-sub _spawn_rds {
-    my ($script, $port, $freq_khz, $json_file, $pidfile) = @_;
+# Double-fork the hub so it is fully detached from this transcoder process.
+sub _spawn_hub {
+    my ($script, $alsa_dev, $bitrate, $sock_path, $ffmpeg_bin) = @_;
 
-    # Double-fork: grandchild re-parents to init, keeping the parent process clean.
     my $pid = fork();
     return unless defined $pid;
 
     if ($pid == 0) {
         my $gc = fork();
-        POSIX::_exit(defined $gc ? 0 : 1) if !defined $gc || $gc != 0;
+        _exit(defined $gc ? 0 : 1) if !defined $gc || $gc != 0;
 
-        POSIX::setsid();
-        open(STDIN,  '<', '/dev/null');
-        open(STDOUT, '>', '/dev/null');
-        open(STDERR, '>>', '/tmp/tefradio-rds.log');  # log instead of discard
+        setsid();
+        open(STDIN,  '<',  '/dev/null');
+        open(STDOUT, '>',  '/dev/null');
+        open(STDERR, '>>', '/tmp/tefradio-hub.log');
+
+        exec($^X, $script, $alsa_dev, $bitrate, $sock_path, $ffmpeg_bin)
+            or _exit(1);
+    }
+
+    waitpid($pid, 0);
+}
+
+# Double-fork the RDS reader so it is fully detached from this process.
+sub _spawn_rds {
+    my ($script, $port, $freq_khz, $json_file, $pidfile) = @_;
+
+    my $pid = fork();
+    return unless defined $pid;
+
+    if ($pid == 0) {
+        my $gc = fork();
+        _exit(defined $gc ? 0 : 1) if !defined $gc || $gc != 0;
+
+        setsid();
+        open(STDIN,  '<',  '/dev/null');
+        open(STDOUT, '>',  '/dev/null');
+        open(STDERR, '>>', '/tmp/tefradio-rds.log');
         exec($^X, $script, $port, $freq_khz, $json_file)
-            or POSIX::_exit(1);
+            or _exit(1);
     }
 
     waitpid($pid, 0);
