@@ -104,7 +104,7 @@ sub getMetadataFor {
         artist => $artist,
         album  => 'TEF FM/AM Radio',
         cover  => undef,
-        icon   => Slim::Player::ProtocolHandlers->iconForURL($url),
+        icon   => Plugins::TEFRadio::Plugin->_pluginDataFor('icon'),
         type   => (defined $freq_khz && $freq_khz >= 10000) ? 'FM Radio' : 'AM Radio',
     };
 }
