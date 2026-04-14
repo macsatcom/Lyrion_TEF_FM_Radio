@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.36';
+$VERSION = '0.37';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -90,6 +90,17 @@ sub initPlugin {
 
     $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .
         $prefs->get('serial_port') . ' device=' . $prefs->get('audio_device'));
+
+    # Remove any stale tefradio:// entries from LMS's persistent track database.
+    # If a tefradio:// URL was played before the plugin was fully working, LMS
+    # may have stored it as a local track (remote=0), causing it to skip
+    # getMetadataFor permanently.  Deleting the entries forces LMS to treat
+    # them as fresh remote streams on next play.
+    eval {
+        Slim::Schema->dbh->do("DELETE FROM tracks WHERE url LIKE 'tefradio://%'");
+        $log->info("TEFRadio: cleared stale tefradio:// entries from track database");
+    };
+    $log->warn("TEFRadio: DB cleanup failed: $@") if $@;
 }
 
 # Called after all plugins are initialised and custom-convert.conf is loaded.

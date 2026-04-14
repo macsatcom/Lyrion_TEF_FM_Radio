@@ -146,9 +146,11 @@ while ($running) {
             my $seg = $B & 0x3;       # 2-bit segment address → position in PS
             my $c1  = ($D >> 8) & 0xFF;
             my $c2  =  $D       & 0xFF;
-            # Only store printable ASCII (stations sometimes pad with 0x20 or 0x0D)
-            my $new1 = ($c1 >= 0x20 && $c1 < 0x7F) ? chr($c1) : ' ';
-            my $new2 = ($c2 >= 0x20 && $c2 < 0x7F) ? chr($c2) : ' ';
+            # Accept ASCII printable + Latin-1 supplement (0xA0-0xFF) for æøå/ÆØÅ etc.
+            # RDS uses ISO 8859-1; chr() gives the Unicode code point, which
+            # JSON::PP->utf8 encodes correctly as UTF-8.
+            my $new1 = ($c1 >= 0x20 && ($c1 < 0x7F || $c1 >= 0xA0)) ? chr($c1) : ' ';
+            my $new2 = ($c2 >= 0x20 && ($c2 < 0x7F || $c2 >= 0xA0)) ? chr($c2) : ' ';
             if ($ps[$seg * 2] ne $new1 || $ps[$seg * 2 + 1] ne $new2) {
                 $ps[$seg * 2]     = $new1;
                 $ps[$seg * 2 + 1] = $new2;
@@ -178,7 +180,7 @@ while ($running) {
                     $changed = 1;
                     last;
                 }
-                my $new = ($c >= 0x20 && $c < 0x7F) ? chr($c) : ' ';
+                my $new = ($c >= 0x20 && ($c < 0x7F || $c >= 0xA0)) ? chr($c) : ' ';
                 if ($rt[$seg * 4 + $i] ne $new) {
                     $rt[$seg * 4 + $i] = $new;
                     $changed = 1;
