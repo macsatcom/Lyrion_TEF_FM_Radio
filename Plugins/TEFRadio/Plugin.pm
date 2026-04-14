@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.37';
+$VERSION = '0.38';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -86,6 +86,7 @@ sub initPlugin {
         tag    => 'tefradio',
         menu   => 'radios',
         weight => 1,
+        icon   => 'plugins/TEFRadio/html/images/icon.png',
     );
 
     $log->info("TEF FM/AM Radio plugin v$VERSION ready — serial=" .

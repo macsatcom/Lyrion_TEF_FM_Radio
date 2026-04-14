@@ -194,27 +194,34 @@ sub _station_matches {
 
 sub _read_rds {
     my ($freq_khz) = @_;
-    my $file = "/tmp/tefradio-rds-${freq_khz}.json";
-    return undef unless -f $file;
 
-    local $/;
-    open(my $fh, '<', $file) or return undef;
-    my $json = <$fh>;
-    CORE::close($fh);
+    # Try the exact-frequency file first.  If it is absent or stale (because
+    # another player retuned the hardware to a different frequency), fall back
+    # to any fresh RDS file.  With "last player wins" frequency semantics all
+    # players hear the same station, so showing whichever RDS data is current
+    # is always correct — regardless of what URL each player thinks it has.
+    my $exact = "/tmp/tefradio-rds-${freq_khz}.json";
+    my @candidates = ($exact, grep { $_ ne $exact } glob('/tmp/tefradio-rds-*.json'));
 
-    my $data = eval { JSON::PP->new->utf8->decode($json) };
-    return undef unless $data;
+    for my $file (@candidates) {
+        next unless -f $file;
 
-    # Use the explicit 'updated' timestamp written by tef-rds.pl; fall back to
-    # file mtime if for some reason the field is absent.  120 s is generous
-    # enough that a station with stable RDS (no PS/RT changes) stays valid
-    # between periodic heartbeat writes from tef-rds.pl.
-    my $age = ($data->{updated} && $data->{updated} > 0)
-        ? time() - $data->{updated}
-        : time() - (stat $file)[9];
-    return undef if $age > 120;
+        local $/;
+        open(my $fh, '<', $file) or next;
+        my $json = <$fh>;
+        CORE::close($fh);
 
-    return $data;
+        my $data = eval { JSON::PP->new->utf8->decode($json) };
+        next unless $data;
+
+        my $age = ($data->{updated} && $data->{updated} > 0)
+            ? time() - $data->{updated}
+            : time() - (stat $file)[9];
+        next if $age > 120;
+
+        return $data;
+    }
+    return undef;
 }
 
 # ─── Misc ─────────────────────────────────────────────────────────────────────

@@ -1,6 +1,10 @@
 # Lyrion TEF Radio
 
-FM radio in Lyrion Music Server, powered by a TEF668X USB tuner.
+<p align="center">
+  <img src="Plugins/TEFRadio/HTML/EN/plugins/TEFRadio/html/images/icon.png" width="180" alt="TEF Radio icon">
+</p>
+
+FM and AM radio in Lyrion Music Server, powered by a TEF668X USB tuner.
 
 The TEF tuner handles FM demodulation in hardware and presents as two USB devices:
 - A **serial control port** (`/dev/ttyACM0`) — for tuning commands
@@ -17,18 +21,23 @@ TEF668X USB tuner
       │
       ├── /dev/ttyACM0  (serial)
       │         └── tef-stream.pl  ─── tune command (T90800)
+      │                   └── tef-rds.pl  ── RDS metadata → /tmp/tefradio-rds-*.json
       │
       └── ALSA capture device
-                └── ffmpeg (MP3 encode)
-                        └── stdout pipe
-                                └── LMS plugin  →  Squeezebox / squeezelite
+                └── tef-hub.pl  (broadcast hub — one per LMS instance)
+                        └── ffmpeg (MP3 encode)
+                                └── Unix socket  ──┬──  tef-stream.pl #1  →  Player A
+                                                   ├──  tef-stream.pl #2  →  Player B
+                                                   └──  tef-stream.pl #N  →  Player N
 ```
 
 When a station is selected in Lyrion:
 1. `ProtocolHandler` spawns `tef-stream.pl`
-2. `tef-stream.pl` sends a tune command over serial, then `exec()`s into ffmpeg
-3. ffmpeg reads from the ALSA capture device and writes MP3 to stdout
-4. LMS reads from the pipe and streams to the player
+2. `tef-stream.pl` tunes the hardware via serial and spawns `tef-rds.pl` for RDS metadata
+3. If no hub is running, `tef-hub.pl` is started — it launches ffmpeg and opens a Unix socket
+4. `tef-stream.pl` connects to the hub socket and relays MP3 to stdout → LMS → player
+
+**Multiple players** can listen simultaneously. All players share the single ffmpeg instance via the hub. The last player to tune determines the frequency for everyone — no player is ever left without audio.
 
 Station changes are instant — the TEF hardware switches frequency with a single serial command.
 
