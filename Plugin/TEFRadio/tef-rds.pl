@@ -47,6 +47,7 @@ if (open my $pf, '>', $pid_file) { print $pf $$; close $pf }
 my $running        = 1;
 my $log_lines      = 0;   # log first few raw lines to show what tuner outputs
 my $log_first_json = 1;   # log once when we successfully write RDS data
+my $last_heartbeat = 0;   # time of last periodic JSON refresh
 $SIG{TERM} = sub { $running = 0 };
 $SIG{INT}  = sub { $running = 0 };
 
@@ -83,6 +84,16 @@ my %data = (
 
 # ── Main read loop ─────────────────────────────────────────────────────────────
 while ($running) {
+    # Heartbeat: refresh JSON timestamp every 20 s even when RDS is stable.
+    # This prevents ProtocolHandler.pm from treating the file as stale when
+    # the station's PS/RT hasn't changed (and tef-rds.pl therefore hasn't
+    # written any new data for a while).
+    if (time() - $last_heartbeat >= 20) {
+        $last_heartbeat = time();
+        $data{updated}  = time();
+        _write_json($out_file, \%data);
+    }
+
     my @ready = $sel->can_read(0.5);
     unless (@ready) {
         # If the port has vanished (USB unplugged), exit

@@ -30,6 +30,7 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use Slim::Utils::Timers;
 use Slim::Music::Info;
+use Slim::Control::Request;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
 use Time::HiRes ();
@@ -38,6 +39,11 @@ my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
 
 my $POLL_INTERVAL = 5; # seconds between RDS JSON checks
+
+# Tracks which URL is currently being polled per client.
+# Prevents getMetadataFor (called by each LMS client poll) from continuously
+# resetting the timer before it has a chance to fire.
+my %_poll_url;
 
 # ─── Protocol capabilities ────────────────────────────────────────────────────
 
@@ -76,16 +82,22 @@ sub getMetadataFor {
     my $title  = $rt  || $preset_name || $ps || "TEF Radio $freq_label";
     my $artist = $ps  || $preset_name || $freq_label;
 
-    # Kick off the RDS polling timer for this client if not already running.
-    # killTimers + setTimer together act as a safe "set-if-not-set" because
-    # killTimers is a no-op when no timer exists.
-    Slim::Utils::Timers::killTimers($client, \&_pollRDS);
-    Slim::Utils::Timers::setTimer(
-        $client,
-        Time::HiRes::time() + $POLL_INTERVAL,
-        \&_pollRDS,
-        $url,
-    );
+    # Start polling timer only if not already active for this URL.
+    # If the URL changed (new station), kill the old timer and start fresh.
+    # Do NOT kill+restart on every call — LMS clients poll getMetadataFor every
+    # few seconds, which would continuously push the timer out and prevent it
+    # from ever firing.
+    my $currently_polling = $_poll_url{$client} // '';
+    if ($currently_polling ne $url) {
+        Slim::Utils::Timers::killTimers($client, \&_pollRDS);
+        $_poll_url{$client} = $url;
+        Slim::Utils::Timers::setTimer(
+            $client,
+            Time::HiRes::time() + $POLL_INTERVAL,
+            \&_pollRDS,
+            $url,
+        );
+    }
 
     return {
         title  => $title,
@@ -106,6 +118,7 @@ sub _pollRDS {
     my $current = Slim::Player::Playlist::url($client) // '';
     unless ($current eq $url) {
         $log->debug("TEFRadio: _pollRDS: client moved on, stopping timer");
+        delete $_poll_url{$client};
         return;
     }
 
@@ -183,14 +196,25 @@ sub _read_rds {
     my ($freq_khz) = @_;
     my $file = "/tmp/tefradio-rds-${freq_khz}.json";
     return undef unless -f $file;
-    return undef if (time() - (stat $file)[9]) > 30;
 
     local $/;
     open(my $fh, '<', $file) or return undef;
     my $json = <$fh>;
     CORE::close($fh);
 
-    return eval { JSON::PP->new->decode($json) };
+    my $data = eval { JSON::PP->new->decode($json) };
+    return undef unless $data;
+
+    # Use the explicit 'updated' timestamp written by tef-rds.pl; fall back to
+    # file mtime if for some reason the field is absent.  120 s is generous
+    # enough that a station with stable RDS (no PS/RT changes) stays valid
+    # between periodic heartbeat writes from tef-rds.pl.
+    my $age = ($data->{updated} && $data->{updated} > 0)
+        ? time() - $data->{updated}
+        : time() - (stat $file)[9];
+    return undef if $age > 120;
+
+    return $data;
 }
 
 # ─── Misc ─────────────────────────────────────────────────────────────────────
