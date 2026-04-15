@@ -5,13 +5,15 @@
     <playerMenu>RADIO</playerMenu>
 
     <description>PLUGIN_TEFRADIO_DESC</description>
+    <icon>plugins/TEFRadio/html/images/tef-radio_svg.png</icon>
+
 
     <creator>Kasper S Nielsen</creator>
     <creatorEmail>kasper@smsweb.dk</creatorEmail>
     <optionsURL>plugins/TEFRadio/settings/basic.html</optionsURL>
 
     <defaultState>enabled</defaultState>
-    <version>0.39</version>
+    <version>0.90.0</version>
 
     <targetApplication>
         <id>SqueezeCenter</id>

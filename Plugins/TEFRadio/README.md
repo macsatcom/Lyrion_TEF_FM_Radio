@@ -4,6 +4,9 @@ Play FM radio from a **TEF668X USB tuner** directly in [Lyrion Music Server](htt
 
 Stations appear alongside your music library and stream instantly to any Squeezebox hardware or squeezelite software player on your network.
 
+![FM Radio plugin icon](LMSPlugin/TEFRadio/HTML/EN/plugins/FMRadio/html/images/tef-radio_svg.png)
+
+
 ---
 
 ## Background — SharkPlay and the idea of a "radio input" plugin
