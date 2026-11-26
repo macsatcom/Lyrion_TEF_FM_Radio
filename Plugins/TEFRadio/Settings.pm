@@ -75,7 +75,7 @@ sub handler {
             $log->error("TEFRadio settings: failed to start tef-scan.pl: $!");
         }
 
-        my $results = eval { JSON::PP->new->decode($json) } // [];
+        my $results = eval { JSON::PP->new->utf8->decode($json) } // [];
 
         if (@$results) {
             my @stations = map {

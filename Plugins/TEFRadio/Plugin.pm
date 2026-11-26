@@ -22,7 +22,7 @@ use strict;
 use warnings;
 
 use vars qw($VERSION);
-$VERSION = '0.38';
+$VERSION = '0.91.0';
 
 use base qw(Slim::Plugin::OPMLBased);
 
@@ -118,6 +118,8 @@ sub postinitPlugin { if (main::TRANSCODING) {
         qw(serial_port audio_device bitrate));
 } }
 
+my %_templates;   # original custom-convert.conf commands, keyed by conversion
+
 sub _updateTranscodingTable {
     my $dir    = _plugin_dir();
     my $script = $^X . ' ' . catfile($dir, 'tef-stream.pl');
@@ -125,13 +127,21 @@ sub _updateTranscodingTable {
     my $device = $prefs->get('audio_device') // 'hw:CARD=Tuner,DEV=0';
     my $bitrate = $prefs->get('bitrate')     // '192k';
 
+    # Quote user-supplied values so spaces/shell characters can't break the command.
+    my $q = sub { my $v = shift; $v =~ s/'/'\\''/g; "'$v'" };
+
     my $cmd_table = Slim::Player::TranscodingHelper::Conversions();
     for my $key (keys %$cmd_table) {
         next unless $key =~ /^tef-/;
-        $cmd_table->{$key} =~ s{TSCRIPT}{$script}g;
-        $cmd_table->{$key} =~ s{SERL}{$port}g;
-        $cmd_table->{$key} =~ s{DEVI}{$device}g;
-        $cmd_table->{$key} =~ s{BITR}{$bitrate}g;
+        # Keep the original placeholder template: substituting in place would
+        # remove the placeholders, so later settings changes would be ignored.
+        $_templates{$key} //= $cmd_table->{$key};
+        my $cmd = $_templates{$key};
+        $cmd =~ s{TSCRIPT}{$script}g;
+        $cmd =~ s{SERL}{$q->($port)}ge;
+        $cmd =~ s{DEVI}{$q->($device)}ge;
+        $cmd =~ s{BITR}{$q->($bitrate)}ge;
+        $cmd_table->{$key} = $cmd;
     }
 
     $log->info("TEFRadio: transcoder command → $script \$URL\$ $port $device $bitrate");

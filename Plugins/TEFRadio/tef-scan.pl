@@ -15,10 +15,26 @@
 
 use strict;
 use warnings;
+use utf8;
 use Fcntl   qw(O_RDWR O_NOCTTY);
 use IO::Select;
 use POSIX   ();
 use JSON::PP;
+
+# RDS character set (EN 50067 Annex E) — same table as tef-rds.pl.
+# Danish: æ=0xF2 ø=0xF7 å=0xF1 Æ=0xE2 Ø=0xE7 Å=0xE1.
+my @EBU = split //,
+    ' !"#¤%&\'()*+,-./0123456789:;<=>?' .
+    '@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]―_' .
+    '‖abcdefghijklmnopqrstuvwxyz{|}¯ ' .
+    'áàéèíìóòúùÑÇŞß¡Ĳ' .
+    'âäêëîïôöûüñçşğıĳ' .
+    'ªα©‰Ğěňőπ€£$←↑→↓' .
+    'º¹²³±İńűµ¿÷°¼½¾§' .
+    'ÁÀÉÈÍÌÓÒÚÙŘČŠŽÐĿ' .
+    'ÂÄÊËÎÏÔÖÛÜřčšžđŀ' .
+    'ÃÅÆŒŷÝÕØÞŊŔĆŚŹŦð' .
+    'ãåæœŵýõøþŋŕćśźŧ ';
 
 my $LOGFILE = '/tmp/tefradio-scan.log';
 sub _log {
@@ -174,7 +190,7 @@ for my $s (@candidates) {
 
 _log(sprintf("scan done: %d stations", scalar @stations));
 close($tty);
-print JSON::PP->new->encode(\@stations), "\n";
+print JSON::PP->new->utf8->encode(\@stations), "\n";
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -218,7 +234,7 @@ sub _wait_for {
 
 sub _rds_char {
     my ($c) = @_;
-    return ($c >= 0x20 && $c < 0x7F) ? chr($c) : ' ';
+    return $c >= 0x20 ? $EBU[$c - 0x20] : ' ';
 }
 
 sub _avg {
