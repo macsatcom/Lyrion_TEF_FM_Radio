@@ -59,15 +59,23 @@ sudo udevadm control --reload-rules &amp;&amp; sudo udevadm trigger</code>
     </div>
     [% END %]
     <input type="hidden" name="runScan" id="runScanVal" value="" />
+    [% IF scan_running %]
+    <input type="button" id="scanBtn" value="Scanning&hellip;" class="btn" disabled="disabled" />
+    <div id="scanProgress" style="margin-top:10px;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px;">
+        Scanning FM band in the background &mdash; this takes 20&ndash;60 seconds. Playback continues normally.
+        This page refreshes automatically.
+    </div>
+    <script type="text/javascript">
+        // Plain GET reload (never re-submits the form, so no second scan starts).
+        setTimeout(function () { window.location.href = window.location.pathname; }, 5000);
+    </script>
+    [% ELSE %]
     <input type="button" id="scanBtn" value="Scan FM Band now" class="btn"
         onclick="document.getElementById('runScanVal').value='1';
-                 document.getElementById('scanBtn').value='Scanning\u2026';
+                 document.getElementById('scanBtn').value='Starting\u2026';
                  document.getElementById('scanBtn').disabled=true;
-                 document.getElementById('scanProgress').style.display='block';
                  this.form.submit();" />
-    <div id="scanProgress" style="display:none;margin-top:10px;color:#856404;background:#fff3cd;border:1px solid #ffc107;border-radius:4px;padding:8px 12px;">
-        Scanning FM band &mdash; please wait 20&ndash;60 seconds&hellip;
-    </div>
+    [% END %]
 [% END %]
 
 [% PROCESS settings/footer.html %]

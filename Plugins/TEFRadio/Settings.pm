@@ -12,9 +12,15 @@ use Slim::Utils::Log;
 use Slim::Utils::Prefs;
 use File::Spec::Functions qw(catfile);
 use JSON::PP;
+use Proc::Background;
+use Slim::Utils::Timers;
+use Time::HiRes ();
 
 my $log   = logger('plugin.tefradio');
 my $prefs = preferences('plugin.tefradio');
+
+my $scan_proc;      # Proc::Background object while a scan is running
+my $scan_message;   # result text, shown once on the next page load
 
 sub name {
     return Slim::Web::HTTP::CSRF->protectName('PLUGIN_TEFRADIO_SETTINGS');
@@ -62,32 +68,16 @@ sub handler {
     }
 
     # ── FM band scan (triggered by the Scan button) ───────────────────────────
-    if ($params->{runScan}) {
-        my $script = catfile(_plugin_dir(), 'tef-scan.pl');
-        my $port   = $prefs->get('serial_port') // '/dev/ttyACM0';
+    # The scan takes 20–60 s.  It runs as a background process so LMS (which is
+    # single-threaded) keeps serving players; a timer collects the result.
+    if ($params->{runScan} && !_scan_running()) {
+        _start_scan();
+    }
 
-        $log->info("TEFRadio settings: starting FM band scan on $port");
-
-        my $json = '';
-        if (open my $fh, '-|', $^X, $script, $port) {
-            local $/; $json = <$fh>; CORE::close($fh);
-        } else {
-            $log->error("TEFRadio settings: failed to start tef-scan.pl: $!");
-        }
-
-        my $results = eval { JSON::PP->new->utf8->decode($json) } // [];
-
-        if (@$results) {
-            my @stations = map {
-                { name => $_->{name}, freq => $_->{freq_mhz} }
-            } @$results;
-            $prefs->set('stations', \@stations);
-            $log->info(sprintf('TEFRadio settings: scan saved %d stations', scalar @stations));
-            $params->{scan_message} = sprintf('Scan complete — found %d stations. Station list updated.', scalar @stations);
-        } else {
-            $params->{scan_message} = 'Scan complete — no stations found above threshold.';
-            $log->warn('TEFRadio settings: scan returned no stations');
-        }
+    $params->{scan_running} = _scan_running() ? 1 : 0;
+    if (!$params->{scan_running} && defined $scan_message) {
+        $params->{scan_message} = $scan_message;
+        $scan_message = undef;   # show once
     }
 
     # Always regenerate the textarea from the saved station array
@@ -106,6 +96,54 @@ sub handler {
     }
 
     return $class->SUPER::handler($client, $params);
+}
+
+# ── Background FM scan ────────────────────────────────────────────────────────
+
+my $SCAN_OUT = '/tmp/tefradio-scan.json';
+my $SCAN_LOG = '/tmp/tefradio-scan.log';
+
+sub _scan_running { return $scan_proc && $scan_proc->alive ? 1 : 0 }
+
+sub _start_scan {
+    my $script = catfile(_plugin_dir(), 'tef-scan.pl');
+    my $port   = $prefs->get('serial_port') // '/dev/ttyACM0';
+    my $q      = sub { my $v = shift; $v =~ s/'/'\\''/g; "'$v'" };
+
+    unlink $SCAN_OUT;
+    my $cmd = join(' ', map { $q->($_) } $^X, $script, $port)
+            . ' > ' . $q->($SCAN_OUT) . ' 2>> ' . $q->($SCAN_LOG);
+
+    $log->info("TEFRadio settings: starting background FM scan on $port");
+    $scan_proc = eval { Proc::Background->new($cmd) };
+    if (!$scan_proc) {
+        $log->error("TEFRadio settings: failed to start tef-scan.pl: " . ($@ || $!));
+        $scan_message = 'Scan could not be started — see the LMS log.';
+        return;
+    }
+    Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 2, \&_check_scan);
+}
+
+sub _check_scan {
+    if (_scan_running()) {
+        Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 2, \&_check_scan);
+        return;
+    }
+    $scan_proc = undef;
+
+    my $json = '';
+    if (open my $fh, '<', $SCAN_OUT) { local $/; $json = <$fh>; CORE::close($fh) }
+    my $results = eval { JSON::PP->new->utf8->decode($json) };
+
+    if (ref $results eq 'ARRAY' && @$results) {
+        my @stations = map { { name => $_->{name}, freq => $_->{freq_mhz} } } @$results;
+        $prefs->set('stations', \@stations);
+        $log->info(sprintf('TEFRadio settings: scan saved %d stations', scalar @stations));
+        $scan_message = sprintf('Scan complete — found %d stations. Station list updated.', scalar @stations);
+    } else {
+        $log->warn('TEFRadio settings: scan returned no stations');
+        $scan_message = 'Scan complete — no stations found above threshold.';
+    }
 }
 
 sub _plugin_dir {
