@@ -21,6 +21,8 @@ my $prefs = preferences('plugin.tefradio');
 
 my $scan_proc;      # Proc::Background object while a scan is running
 my $scan_message;   # result text, shown once on the next page load
+my $scan_started;   # time() when the current scan was started
+my $SCAN_TIMEOUT = 300;   # seconds; tef-scan.pl limits itself to ~3 min
 
 sub name {
     return Slim::Web::HTTP::CSRF->protectName('PLUGIN_TEFRADIO_SETTINGS');
@@ -121,10 +123,18 @@ sub _start_scan {
         $scan_message = 'Scan could not be started — see the LMS log.';
         return;
     }
+    $scan_started = time();
     Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 2, \&_check_scan);
 }
 
 sub _check_scan {
+    if (_scan_running() && time() - $scan_started > $SCAN_TIMEOUT) {
+        $log->warn("TEFRadio settings: scan exceeded ${SCAN_TIMEOUT}s, stopping it");
+        $scan_proc->die;
+        $scan_proc    = undef;
+        $scan_message = 'Scan took too long and was stopped — see /tmp/tefradio-scan.log.';
+        return;
+    }
     if (_scan_running()) {
         Slim::Utils::Timers::setTimer(undef, Time::HiRes::time() + 2, \&_check_scan);
         return;

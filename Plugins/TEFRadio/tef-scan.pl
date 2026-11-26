@@ -38,16 +38,20 @@ my @EBU = split //,
 
 my $LOGFILE = '/tmp/tefradio-scan.log';
 sub _log {
-    if (open my $f, '>>', $LOGFILE) {
+    if (open my $f, '>>:encoding(UTF-8)', $LOGFILE) {
         print $f scalar(localtime) . ": @_\n";
         close $f;
     }
     warn "@_\n";   # also goes to LMS log via stderr
 }
 
+binmode STDERR, ':encoding(UTF-8)';
+
 my $port      = shift // '/dev/ttyACM0';
 my $threshold = (@ARGV && $ARGV[0] =~ /^[\d.]+$/) ? shift : 10;  # dBf
 my $cci_max   = 35;   # drop stations with CCI above this
+my $peak_margin = 6;  # dB above band median for a frequency to count as a station
+my $max_scan_s  = 180; # hard limit for the whole per-station phase
 
 _log("tef-scan starting: port=$port threshold=$threshold cci_max=$cci_max");
 
@@ -101,10 +105,27 @@ _log(defined $result_line ? "got result: " . substr($result_line, 0, 80) : "scan
 my @candidates;
 
 if ($result_line && $result_line =~ /^U(.+)$/) {
+    my @all;
     for my $entry (split /,/, $1) {
         next unless $entry =~ /^(\d+)=([-\d.]+)$/;
-        my ($khz, $rssi) = (int($1), $2 + 0);
-        next if $rssi < $threshold;
+        push @all, [ int($1), $2 + 0 ];
+    }
+    @all = sort { $a->[0] <=> $b->[0] } @all;
+
+    # Adaptive noise floor: with a good antenna the whole band can sit at
+    # 50+ dBf, so a fixed threshold turns every frequency into a candidate.
+    # Use the median level of the band + a margin instead.
+    my @levels = sort { $a <=> $b } map { $_->[1] } @all;
+    my $median = @levels ? $levels[int(@levels / 2)] : 0;
+    my $floor  = $median + $peak_margin;
+    $floor = $threshold if $floor < $threshold;
+
+    for my $i (0 .. $#all) {
+        my ($khz, $rssi) = @{ $all[$i] };
+        next if $rssi < $floor;
+        # Only local peaks: a station's neighbours (±100 kHz) are weaker
+        next if $i > 0      && $all[$i - 1][1] > $rssi;
+        next if $i < $#all  && $all[$i + 1][1] > $rssi;
         push @candidates, {
             freq_khz => $khz,
             freq_mhz => $khz / 1000,
@@ -113,7 +134,8 @@ if ($result_line && $result_line =~ /^U(.+)$/) {
         };
     }
     @candidates = sort { $b->{rssi} <=> $a->{rssi} } @candidates;
-    _log(sprintf("%d candidates above %s dBf threshold", scalar @candidates, $threshold));
+    _log(sprintf("%d candidates (local peaks above %.1f dBf; band median %.1f) out of %d channels",
+        scalar @candidates, $floor, $median, scalar @all));
 }
 
 # ── Per-station check: CCI quality filter + RDS PS name ──────────────────────
@@ -125,7 +147,13 @@ if ($result_line && $result_line =~ /^U(.+)$/) {
 
 my @stations;
 
+my $scan_deadline = time() + $max_scan_s;
+
 for my $s (@candidates) {
+    if (time() > $scan_deadline) {
+        _log("time limit of ${max_scan_s}s reached — stopping with stations found so far");
+        last;
+    }
     _log(sprintf("checking %.1f MHz (RSSI %.1f)", $s->{freq_mhz}, $s->{rssi}));
     _send($tty, "T$s->{freq_khz}");
     select(undef, undef, undef, 0.35);   # let tuner settle
@@ -138,6 +166,8 @@ for my $s (@candidates) {
     while (time() < $deadline) {
         # Early exit: have enough CCI samples AND complete PS
         last if @cci_vals >= 4 && $ps_segs == 0xF;
+        # Early reject: clearly too much interference — don't wait 5 s
+        last if @cci_vals >= 3 && _avg(@cci_vals) > $cci_max * 1.5;
 
         my $line = _readline($sel, $deadline - time());
         next unless defined $line;
