@@ -124,13 +124,14 @@ sub _try_connect {
 # Copy data from $sock → STDOUT until either end closes.
 sub _relay {
     my ($sock) = @_;
-    while (1) {
+    local $SIG{PIPE} = 'IGNORE';             # get EPIPE instead of dying silently
+    RELAY: while (1) {
         my $n = sysread($sock, my $buf, 65536);
-        last unless defined $n && $n > 0;   # hub closed or EOF
+        last RELAY unless defined $n && $n > 0;   # hub closed or EOF
         my $off = 0;
         while ($off < length($buf)) {
             my $w = syswrite(STDOUT, $buf, length($buf) - $off, $off);
-            last unless defined $w;          # LMS closed the pipe
+            last RELAY unless defined $w && $w > 0;   # LMS closed the pipe → exit
             $off += $w;
         }
     }

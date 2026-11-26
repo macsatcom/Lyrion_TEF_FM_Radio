@@ -23,7 +23,8 @@
 
 use strict;
 use warnings;
-use Fcntl   qw(O_RDONLY O_NOCTTY);
+use utf8;
+use Fcntl   qw(O_RDONLY O_NOCTTY :flock);
 use IO::Select;
 use POSIX   ();
 use JSON::PP;
@@ -40,6 +41,31 @@ my ($port, $freq_khz, $out_file) = @ARGV;
 my $pid_file = "$out_file.pid";
 
 _log("starting pid=$$ port=$port freq=${freq_khz}kHz");
+
+# ── Single-instance lock ──────────────────────────────────────────────────────
+# Only ONE process may read the serial port.  If two readers run at once,
+# each gets random fragments of every line and RDS text turns into garbage.
+# A previous reader still holding the lock is terminated.
+my $lock_file = '/tmp/tefradio-rds.lock';
+open(my $lock_fh, '+>>', $lock_file) or die "tef-rds: cannot open $lock_file: $!\n";
+unless (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+    seek($lock_fh, 0, 0);
+    my $old = <$lock_fh>;
+    if (defined $old && $old =~ /^(\d+)/ && $1 != $$) {
+        _log("another reader (pid $1) holds the port, terminating it");
+        kill('TERM', $1);
+    }
+    my $deadline = time() + 3;
+    until (flock($lock_fh, LOCK_EX | LOCK_NB)) {
+        if (time() > $deadline) {
+            _log("could not acquire $lock_file, exiting");
+            exit 1;
+        }
+        select(undef, undef, undef, 0.1);
+    }
+}
+truncate($lock_fh, 0);
+syswrite($lock_fh, "$$\n");
 
 # Write PID file so the plugin can kill us
 if (open my $pf, '>', $pid_file) { print $pf $$; close $pf }
@@ -68,10 +94,36 @@ _log("port open OK, reading RDS data");
 my $sel = IO::Select->new($tty);
 my $buf = '';
 
+# ── RDS character set (EN 50067 / IEC 62106 Annex E, "G0" table) ─────────────
+# RDS does NOT use Latin-1.  Danish letters are æ=0xF2 ø=0xF7 å=0xF1,
+# Æ=0xE2 Ø=0xE7 Å=0xE1.  Index = byte - 0x20.
+my @EBU = split //,
+    ' !"#¤%&\'()*+,-./0123456789:;<=>?' .
+    '@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]―_' .
+    '‖abcdefghijklmnopqrstuvwxyz{|}¯ ' .
+    'áàéèíìóòúùÑÇŞß¡Ĳ' .
+    'âäêëîïôöûüñçşğıĳ' .
+    'ªα©‰Ğěňőπ€£$←↑→↓' .
+    'º¹²³±İńűµ¿÷°¼½¾§' .
+    'ÁÀÉÈÍÌÓÒÚÙŘČŠŽÐĿ' .
+    'ÂÄÊËÎÏÔÖÛÜřčšžđŀ' .
+    'ÃÅÆŒŷÝÕØÞŊŔĆŚŹŦð' .
+    'ãåæœŵýõøþŋŕćśźŧ ';
+die "EBU table size wrong: " . scalar(@EBU) unless @EBU == 224;
+
+sub _ebu { my $c = shift; return $c >= 0x20 ? $EBU[$c - 0x20] : ' ' }
+
+# Max accepted error level per block (0 = none, 1 = 1-2 bits corrected,
+# 2 = 3-5 bits corrected, 3 = uncorrectable).  Strict, like librdsparser.
+my $MAX_ERR = 0;
+
 # ── RDS state ─────────────────────────────────────────────────────────────────
 my @ps       = (' ') x 8;   # 8-char Programme Service name
 my @rt       = (' ') x 64;  # 64-char RadioText (2A groups)
 my $rt_ab    = -1;           # A/B flip-flop — detects new RT message
+my %rt_seen;                 # segments received for the current RT message
+my $rt_end   = 64;           # message length (set when 0x0D end marker seen)
+my $rt_done  = '';           # last COMPLETE RadioText — what we publish
 my $pi       = '';
 
 my %data = (
@@ -133,8 +185,11 @@ while ($running) {
         # RDS group (legacy format): R<B:4hex><C:4hex><D:4hex><err:2hex>
         next unless $line =~ /^R([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})([0-9A-Fa-f]{4})([0-9A-Fa-f]{2})$/;
 
-        my ($B, $C, $D) = (hex($1), hex($2), hex($3));
-        # err hex($4) — we ignore error flags for now
+        my ($B, $C, $D, $err) = (hex($1), hex($2), hex($3), hex($4));
+        # Error byte: 2 bits per block, A=bits 7-6, B=5-4, C=3-2, D=1-0
+        # (legacy format has no block A, but the flags keep the same layout).
+        my ($eB, $eC, $eD) = (($err >> 4) & 3, ($err >> 2) & 3, $err & 3);
+        next if $eB > $MAX_ERR;   # group type/address unreliable
 
         my $group_type = ($B >> 12) & 0xF;
         my $version    = ($B >> 11) & 0x1;   # 0 = variant A, 1 = variant B
@@ -143,14 +198,10 @@ while ($running) {
 
         # ── Group 0 (0A/0B): Programme Service name ────────────────────────
         if ($group_type == 0) {
-            my $seg = $B & 0x3;       # 2-bit segment address → position in PS
-            my $c1  = ($D >> 8) & 0xFF;
-            my $c2  =  $D       & 0xFF;
-            # Accept ASCII printable + Latin-1 supplement (0xA0-0xFF) for æøå/ÆØÅ etc.
-            # RDS uses ISO 8859-1; chr() gives the Unicode code point, which
-            # JSON::PP->utf8 encodes correctly as UTF-8.
-            my $new1 = ($c1 >= 0x20 && ($c1 < 0x7F || $c1 >= 0xA0)) ? chr($c1) : ' ';
-            my $new2 = ($c2 >= 0x20 && ($c2 < 0x7F || $c2 >= 0xA0)) ? chr($c2) : ' ';
+            next if $eD > $MAX_ERR;
+            my $seg  = $B & 0x3;
+            my $new1 = _ebu(($D >> 8) & 0xFF);
+            my $new2 = _ebu( $D       & 0xFF);
             if ($ps[$seg * 2] ne $new1 || $ps[$seg * 2 + 1] ne $new2) {
                 $ps[$seg * 2]     = $new1;
                 $ps[$seg * 2 + 1] = $new2;
@@ -158,31 +209,45 @@ while ($running) {
             }
         }
 
-        # ── Group 2A: RadioText ────────────────────────────────────────────
-        elsif ($group_type == 2 && $version == 0) {
-            my $ab  = ($B >> 4) & 0x1;   # A/B flag
-            my $seg =  $B       & 0xF;   # 4-bit segment → position in RT
+        # ── Group 2A / 2B: RadioText ───────────────────────────────────────
+        elsif ($group_type == 2) {
+            my $ab  = ($B >> 4) & 0x1;
+            my $seg =  $B       & 0xF;
 
-            # A/B toggle signals a new RT message; clear the buffer
-            if ($rt_ab != -1 && $ab != $rt_ab) {
-                @rt = (' ') x 64;
-                $changed = 1;
+            # 2A: 4 chars in C+D (64-char text).  2B: 2 chars in D (32-char).
+            my @bytes;
+            if ($version == 0) {
+                next if $eC > $MAX_ERR || $eD > $MAX_ERR;
+                @bytes = (($C >> 8) & 0xFF, $C & 0xFF, ($D >> 8) & 0xFF, $D & 0xFF);
+            } else {
+                next if $eD > $MAX_ERR;
+                @bytes = (($D >> 8) & 0xFF, $D & 0xFF);
             }
-            $rt_ab = $ab;
+            my $width = scalar @bytes;
 
-            # Group 2A carries 4 chars: C_hi C_lo D_hi D_lo
-            my @chars = (($C >> 8) & 0xFF, $C & 0xFF, ($D >> 8) & 0xFF, $D & 0xFF);
-            for my $i (0 .. 3) {
-                my $c = $chars[$i];
-                if ($c == 0x0D) {
-                    # Carriage return = end-of-message; pad remainder with spaces
-                    $rt[$_] = ' ' for ($seg * 4 + $i .. 63);
-                    $changed = 1;
-                    last;
-                }
-                my $new = ($c >= 0x20 && ($c < 0x7F || $c >= 0xA0)) ? chr($c) : ' ';
-                if ($rt[$seg * 4 + $i] ne $new) {
-                    $rt[$seg * 4 + $i] = $new;
+            # A/B toggle = new message: start collecting from scratch
+            if ($ab != $rt_ab) {
+                @rt = (' ') x 64;
+                %rt_seen = ();
+                $rt_end  = $version == 0 ? 64 : 32;
+                $rt_ab   = $ab;
+            }
+
+            for my $i (0 .. $#bytes) {
+                my $pos = $seg * $width + $i;
+                if ($bytes[$i] == 0x0D) { $rt_end = $pos; last }
+                $rt[$pos] = _ebu($bytes[$i]);
+            }
+            $rt_seen{$seg} = 1;
+
+            # Publish only once every segment of the message has arrived,
+            # so listeners never see half-received text.
+            my $needed = int(($rt_end + $width - 1) / $width);
+            if (!grep { !$rt_seen{$_} } 0 .. $needed - 1) {
+                (my $txt = join('', @rt[0 .. $rt_end - 1])) =~ s/\s+$//;
+                $txt =~ s/^\s+//;
+                if ($txt ne $rt_done) {
+                    $rt_done = $txt;
                     $changed = 1;
                 }
             }
@@ -190,8 +255,7 @@ while ($running) {
 
         if ($changed) {
             my $ps_str = join('', @ps);
-            my $rt_str = join('', @rt);
-            $rt_str =~ s/\s+$//;   # trim trailing whitespace
+            my $rt_str = $rt_done;
 
             $data{ps}      = $ps_str;
             $data{rt}      = $rt_str;
@@ -206,6 +270,8 @@ while ($running) {
 }
 
 close($tty);
+truncate($lock_fh, 0);
+close($lock_fh);   # releases the flock
 unlink $out_file;
 unlink $pid_file;
 
